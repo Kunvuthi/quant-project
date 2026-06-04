@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Environments
+.env
+.venv
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Data (don't commit large data files to Git)
+data/raw/
+data/processed/
+*.csv
+*.parquet
+*.h5
+
+# Notebook outputs that might contain large data
+# (we'll handle these case-by-case)
