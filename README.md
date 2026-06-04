@@ -11,6 +11,7 @@ to rough volatility, with a multi-asset fund case study and backtested strategie
 Requires miniforge/mamba. To recreate the environment:
 
 mamba env create -f environment.yml
+
 conda activate quant
 
 ## Structure
