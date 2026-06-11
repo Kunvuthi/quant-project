@@ -99,26 +99,53 @@ def bsm_greeks(
     
     return {'delta': delta, 'gamma': gamma, 'vega': vega, 'theta': theta, 'rho': rho}
 
-# # Greek Test 
-# # Example:
-# S = 100
-# K = 100
-# T = 1
-# r = 0.05
-# sigma = 0.2
-
-# call_price = bsm_price(S, K, T, r, sigma, option_type='call')
-# put_price = bsm_price(S, K, T, r, sigma, option_type='put')
-
-# print(f"Call Price: {call_price:.4f}")
-# print(f"Put Price: {put_price:.4f}")
-
-# call_greeks = bsm_greeks(S, K, T, r, sigma, option_type='call')
-# put_greeks = bsm_greeks(S, K, T, r, sigma, option_type='put')
-
-# print("Call Greeks:", call_greeks)
-# print("Put Greeks:", put_greeks)
-
-# # Call PDE test 
-# print("Call PDE Test:")
-# print(call_greeks['theta'] + 0.5 * sigma**2 * S**2 * call_greeks['gamma'] + r * S * call_greeks['delta'] - r * call_price)
+def bsm_greeks_fd(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+    option_type: Literal['call', 'put'] = 'call',
+    h: float = 1e-4
+) -> dict:
+    """
+    Finite-difference Greeks via central differences.
+    
+    Used to verify the analytic Greeks. Accuracy is O(h^2);
+    h=1e-4 is usually a good compromise between truncation and roundoff error.
+    
+    We are using the Central Difference formula for better accuracy:
+    f'(x) + O(h^2) <- (f(x + h) - f(x - h)) / (2 * h) from Taylor expansion around x. 
+    We use the 2nd central difference for gamma: f''(x) + O(h^2) <- (f(x + h) - 2 * f(x) + f(x - h)) / (h^2).
+    This is more accurate than the Forward or Backward Difference formulas, which are O(h) accurate.
+    """
+    
+    if option_type not in ('call', 'put'):
+        raise ValueError("option_type must be 'call' or 'put'")
+    
+    price = bsm_price(S, K, T, r, sigma, option_type)
+    
+    # Delta: dPrice/dS
+    price_up = bsm_price(S + h, K, T, r, sigma, option_type)
+    price_down = bsm_price(S - h, K, T, r, sigma, option_type)
+    delta = (price_up - price_down) / (2 * h)
+    
+    # Gamma: d^2Price/dS^2
+    gamma = (price_up - 2 * price + price_down) / (h ** 2)
+    
+    # Vega: dPrice/dsigma
+    price_up = bsm_price(S, K, T, r, sigma + h, option_type)
+    price_down = bsm_price(S, K, T, r, sigma - h, option_type)
+    vega = (price_up - price_down) / (2 * h)
+    
+    # Theta: dPrice/dT
+    price_up = bsm_price(S, K, T + h, r, sigma, option_type)
+    price_down = bsm_price(S, K, T - h, r, sigma, option_type)
+    theta = -(price_up - price_down) / (2 * h)
+    
+    # Rho: dPrice/dr
+    price_up = bsm_price(S, K, T, r + h, sigma, option_type)
+    price_down = bsm_price(S, K, T, r - h, sigma, option_type)
+    rho = (price_up - price_down) / (2 * h)
+    
+    return {'delta': delta, 'gamma': gamma, 'vega': vega, 'theta': theta, 'rho': rho}
