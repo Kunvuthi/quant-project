@@ -1,7 +1,6 @@
 # Weekly Log
 
-A running record of work completed each day, intended both as documentation
-and as handoff context for future chat sessions.
+A running record of work completed each day as documentation.
 
 ## Week 1 (Jun 10–17): BSM Implementation
 
