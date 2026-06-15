@@ -23,13 +23,32 @@ A running record of work completed each day as documentation.
   - All five FD Greeks agree with analytic to better than 1e-6
   - Built confidence in bump-and-revalue methodology for use later with Heston
 
-### Day 2 - Fri Jun 13
+### Day 2 - Fri Jun 12
 - CRR binomial tree (recombining, O(N) memory)
 - Empirically verified O(1/N) convergence to BSM (slope = -1 on log-log)
 - Observed strike-discretisation oscillation at OTM strikes
 - Richardson extrapolation gives O(1/N²) on smooth (ATM) case, ~1000× error reduction
 - CRR put-call parity holds to machine precision regardless of N
   (arbitrage-free model is internally consistent even when externally inaccurate)
+
+### Day 3 — Mon Jun 15
+- Vectorised MC pricer in `models/montecarlo.py`
+  - Direct sampling from closed-form GBM solution (no time-stepping bias)
+  - Returns (price, standard_error) tuple, never a bare point estimate
+  - Reproducible via optional seed
+- Verified O(1/√N) convergence over 4 orders of magnitude (N=100 to 1M)
+- Implemented antithetic variates with correct pair-averaging
+  - **Two pedagogical bugs caught**:
+    1. First attempt averaged unrelated payoffs (wrong concatenation order) → no
+       variance reduction at all
+    2. Second attempt collapsed wrong reshape axis → spurious 590,000× "reduction",
+       caught by z-score check showing 273 SEs from truth
+  - Final implementation: SE ratio converges to 1/√2 ≈ 0.707 over 5 orders of N
+- MC put-call parity behaves differently from CRR's:
+  - CRR parity holds exactly (deterministic quadrature)
+  - MC parity holds only in expectation; finite-sample residual has stddev
+    σ·S·e^(rT)·√T/√N ≈ 0.21 at N=10⁴ — consistent with observed -0.18
+- Lesson: report SE always; cross-check estimate against truth via z-score
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
