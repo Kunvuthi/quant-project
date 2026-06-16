@@ -2,6 +2,7 @@ from scipy.optimize import brentq
 from models.bsm import bsm_price
 from typing import Literal
 import numpy as np
+import pandas as pd
 
 def bsm_implied_vol(
     price: float,
@@ -42,4 +43,38 @@ def bsm_implied_vol(
     sigma_imp = brentq(f, 1e-6, 5.0, xtol=tol)    
     
     return sigma_imp
+
+def compute_smile(
+    df: pd.DataFrame,
+    spot: float,
+    T: float,
+    r: float = 0.045,
+    option_type: Literal['call', 'put'] = 'call',
+) -> pd.DataFrame:
+    """
+    Compute implied volatility for each row in a cleaned chain.
+    Adds 'iv' column. Drops rows where IV inversion fails (returns NaN).
+    """
+    df = df.copy()
+    
+    df['mid'] = (df['ask'] + df['bid']) / 2
+    
+    df['iv'] = df.apply(
+    lambda row: bsm_implied_vol(
+        price=row['mid'],
+        S=spot,
+        K=row['strike'],
+        T=T,
+        r=r,
+        option_type=option_type,
+    ),
+    axis=1,
+)
+    
+    n_before = len(df)
+    df = df.dropna(subset=['iv'])
+    n_after = len(df)
+    if n_after < n_before:
+        print(f"Dropped {n_before - n_after} rows with invalid IV")
+    return df
     
