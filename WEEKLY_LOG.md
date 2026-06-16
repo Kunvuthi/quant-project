@@ -31,7 +31,7 @@ A running record of work completed each day as documentation.
 - CRR put-call parity holds to machine precision regardless of N
   (arbitrage-free model is internally consistent even when externally inaccurate)
 
-### Day 3 — Mon Jun 15
+### Day 3 - Mon Jun 15
 - Vectorised MC pricer in `models/montecarlo.py`
   - Direct sampling from closed-form GBM solution (no time-stepping bias)
   - Returns (price, standard_error) tuple, never a bare point estimate
@@ -47,11 +47,29 @@ A running record of work completed each day as documentation.
 - MC put-call parity behaves differently from CRR's:
   - CRR parity holds exactly (deterministic quadrature)
   - MC parity holds only in expectation; finite-sample residual has stddev
-    σ·S·e^(rT)·√T/√N ≈ 0.21 at N=10⁴ — consistent with observed -0.18
+    σ·S·e^(rT)·√T/√N ≈ 0.21 at N=10⁴ - consistent with observed -0.18
 - Lesson: report SE always; cross-check estimate against truth via z-score
+
+### Day 4 - Tue Jun 17
+- Implied volatility inverter in `models/implied_vol.py`
+  - Brent's method via `scipy.optimize.brentq`; round-trip accuracy ~1e-13
+  - Arbitrage-bound rejection returns `np.nan` (not None - for vectorisation)
+  - Tested on ATM call, OTM call, OTM put - all round-trip cleanly
+  - `compute_smile` - applies inverter row-by-row via `df.apply(axis=1)` 
+- First real options data via yfinance (rate-limited mid-session; cached defensively)
+  - SPX 30 DTE chain, 46 calls × 14 cols
+  - **yfinance quirk: openInterest column is always 0 for SPX index options.**
+    Filter relaxed to ignore OI; documented in clean_chain defaults.
+- Data hygiene module `models/spx_chain.py`:
+  - `fetch_chain_cached` - file-backed cache in `data/raw/`, immune to rate limits
+  - `clean_chain` - filters on bid > 0, spread, volume, staleness; 46 → 21 rows
+- **First SPX volatility smile produced.** ATM ~13.3%, left wing steepens
+  faster than right (equity skew); minimum at k ≈ 0.05 (5% OTM).
+- Visualised in log-moneyness coordinates - natural for SPX vol literature.
+- This shape is the empirical motivation for everything in weeks 3-9.
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
   functional, cosmetic only
-- All Day 1–2 work pushed to `feature/week-01-bsm` branch on GitHub
+- All Day 1–5 work pushed to `feature/week-01-bsm` branch on GitHub
