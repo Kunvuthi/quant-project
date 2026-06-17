@@ -20,7 +20,7 @@ import numpy as np
 # closest = min(available, key=lambda d: abs(d - target))
 # print(f"Closest available: {closest.date()} ({(closest - pd.Timestamp(today)).days})")
 
-def fetch_chain(ticker: str, expiry: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def fetch_chain_yf(ticker: str, expiry: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Fetch option chain for a given ticker and expiry.
     
@@ -40,7 +40,7 @@ def fetch_chain(ticker: str, expiry: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     chain = tk.option_chain(expiry)
     return chain.calls, chain.puts
 
-def fetch_chain_cached(
+def fetch_chain_cached_yf(
     ticker: str, 
     expiry: str, 
     cache_dir: str | None = None,
@@ -62,9 +62,24 @@ def fetch_chain_cached(
         return pd.read_csv(calls_path), pd.read_csv(puts_path)
     
     print("Fetching live...")
-    calls, puts = fetch_chain(ticker, expiry)
+    calls, puts = fetch_chain_yf(ticker, expiry)
     calls.to_csv(calls_path, index=False)
     puts.to_csv(puts_path, index=False)
+    return calls, puts
+
+def fetch_chain_cboe(all_options: pd.DataFrame, expiry: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Filter the full CBOE option list to one expiry, split into calls/puts."""
+    df = all_options[all_options['expiry'] == expiry].copy()
+    
+    # CBOE uses 'open_interest' (snake_case); yfinance uses 'openInterest' (camelCase).
+    # Rename for compatibility with existing clean_chain.
+    df = df.rename(columns={
+        'open_interest': 'openInterest',
+        'last_trade_time': 'lastTradeDate',
+    })
+    
+    calls = df[df['option_type'] == 'call'].copy()
+    puts = df[df['option_type'] == 'put'].copy()
     return calls, puts
 
 def clean_chain(
