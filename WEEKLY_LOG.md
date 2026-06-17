@@ -68,8 +68,38 @@ A running record of work completed each day as documentation.
 - Visualised in log-moneyness coordinates - natural for SPX vol literature.
 - This shape is the empirical motivation for everything in weeks 3-9.
 
+### Day 5 - Wed Jun 17
+- **Renamed** `models/spx_chain.py` → `models/option_chain.py` for multi-source generality (`git mv` preserves history)
+- **CBOE data source** added as alternative to yfinance (which rate-limited again mid-session)
+  - `fetch_chain_cboe(ticker)` pulls full chain (~32k contracts in one call) from CBOE's free delayed-quotes JSON endpoint
+  - Returns `(DataFrame, spot)` - spot extracted from response for single source of truth at fetch time
+  - Provides real `open_interest`, BSM-computed Greeks, theoretical prices - far richer than yfinance
+  - CBOE's own `iv30 = 13.6%` independently validates yesterday's ATM IV computation (~13.3%)
+- **OCC symbol parser** `_parse_occ_symbol`: decodes `SPXW260618C00200000` → `{root, expiry, option_type, strike}`
+  - Strike encoding: last 8 chars = strike × 1000, integer (avoids floats for exact representation)
+  - **Root extraction added** after discovering CBOE returns both SPX (AM-settled monthly) and SPXW (PM-settled weekly) for many expiries - caused duplicate strikes at first
+  - Filter to `root == 'SPXW'` downstream; SPXW carries most current liquidity
+- `find_closest_expiry()` helper - date-agnostic, uses `pd.Timestamp.now(tz='UTC').normalize()` rather than hardcoded today
+- `filter_by_expiry()` helper splits the full chain into `(calls, puts)` for one expiry, returning yfinance-shaped DataFrames so `clean_chain` and `compute_smile` work unchanged
+- **CBOE-tuned `clean_chain` defaults**: `min_open_interest=10`, `max_relative_spread=0.30`, `max_staleness_days=2` (tighter than yfinance defaults because CBOE data is reliably cleaner)
+- **Dual-expiry term structure produced**:
+  - 30 DTE (expiry 2026-07-17): 83 usable strikes after cleaning; smile range 11.3%–17.9%, ATM IV 14.7%
+  - 75 DTE (expiry 2026-08-31): 20 usable strikes; smile range 12.2%–15.9%, ATM IV 14.7%
+  - Initial 60 DTE attempt (2026-08-14) gave only 9 strikes - too sparse; pushed out to next high-liquidity expiry
+- **Empirical findings**:
+  - ATM IV roughly flat across maturities (calm regime - no immediate vol premium)
+  - Per-unit-strike skew ~70% steeper at 30 DTE than 75 DTE - textbook term-structure flattening, empirically confirmed
+  - Far-OTM wing data is noisy (e.g., 75 DTE K=9000 IV=14.8% - single $0.93 mid price, low liquidity)
+- Week 1 summary markdown cell written at top of `03_first_spx_smile.ipynb`
+- Branch `feature/week-01-bsm` merged to `main` via PR; tagged `v0.1-week1`
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
   functional, cosmetic only
 - All Day 1–5 work pushed to `feature/week-01-bsm` branch on GitHub
+- Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
+- SPX dividend yield (~1.3%) not modelled - affects forward, hence IV inversion
+- Smile wing noise from bid-ask spreads - SVI smoothing planned for Week 3
+- `sys.path.append('..')` still in notebooks - convert to `pyproject.toml` editable install when it becomes annoying
+- Per-source data hygiene config (yfinance vs CBOE filter defaults) could be extracted from function signature into a config dict - small refactor opportunity

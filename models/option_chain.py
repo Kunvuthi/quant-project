@@ -20,6 +20,27 @@ import numpy as np
 # closest = min(available, key=lambda d: abs(d - target))
 # print(f"Closest available: {closest.date()} ({(closest - pd.Timestamp(today)).days})")
 
+def _parse_occ_symbol(symbol: str) -> dict:
+    """Parse OCC option symbol like 'SPXW260618C00200000'."""
+    # The OCC format is fixed-width from the RIGHT:
+    # last 8 chars  = strike × 1000
+    # one char before that = C or P
+    # six chars before that = YYMMDD
+    # everything left over = root symbol (SPX, SPXW, AAPL, etc.)
+    payload = symbol[-15:]
+    root = symbol[:-15]
+    
+    date_str = payload[:6]
+    option_type = payload[6]
+    strike_int = int(payload[7:])
+    
+    return {
+        'root': root,
+        'expiry': f"20{date_str[:2]}-{date_str[2:4]}-{date_str[4:]}",
+        'option_type': 'call' if option_type == 'C' else 'put',
+        'strike': strike_int / 1000.0,
+    }
+
 def fetch_chain_yf(ticker: str, expiry: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Fetch option chain for a given ticker and expiry.
@@ -67,17 +88,41 @@ def fetch_chain_cached_yf(
     puts.to_csv(puts_path, index=False)
     return calls, puts
 
-def fetch_chain_cboe(all_options: pd.DataFrame, expiry: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Filter the full CBOE option list to one expiry, split into calls/puts."""
-    df = all_options[all_options['expiry'] == expiry].copy()
+def fetch_chain_cboe(ticker: str = '^SPX') -> tuple[pd.DataFrame, float]:
+    """
+    Fetch full option chain from CBOE.
     
-    # CBOE uses 'open_interest' (snake_case); yfinance uses 'openInterest' (camelCase).
-    # Rename for compatibility with existing clean_chain.
+    Returns
+    -------
+    (chain, spot) : tuple
+        chain : DataFrame of all listed contracts (every expiry, calls + puts)
+        spot  : current underlying price at fetch time
+    """
+    cboe_ticker = ticker.lstrip('^')
+    url = f"https://cdn.cboe.com/api/global/delayed_quotes/options/_{cboe_ticker}.json"
+    
+    response = pd.read_json(url)
+    spot = float(response.loc['current_price', 'data'])   # ← extract spot
+    options_data = response.loc['options', 'data']
+    
+    df = pd.DataFrame(options_data)
+    parsed = df['option'].apply(_parse_occ_symbol).apply(pd.Series)
+    df = pd.concat([df, parsed], axis=1)
     df = df.rename(columns={
         'open_interest': 'openInterest',
         'last_trade_time': 'lastTradeDate',
     })
     
+    return df, spot
+
+def filter_by_expiry(
+    all_options: pd.DataFrame, 
+    expiry: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Filter a CBOE full chain to one expiry; return (calls, puts).
+    """
+    df = all_options[all_options['expiry'] == expiry]
     calls = df[df['option_type'] == 'call'].copy()
     puts = df[df['option_type'] == 'put'].copy()
     return calls, puts
@@ -96,8 +141,6 @@ def clean_chain(
     Returns a copy with a new 'mid' column = (bid + ask) / 2.
     """
     df = df.copy()
-    
-   
     
     if verbose: print(f"Started: {len(df)} rows")
     df = df[df['bid'] > 0]
@@ -119,7 +162,39 @@ def clean_chain(
     if verbose: print(f"After staleness filter:      {len(df)}")
     
     return df
+
+def find_closest_expiry(
+    available_expiries: list[str],
+    target_days: int,
+    today: pd.Timestamp | None = None,
+) -> tuple[str, int]:
+    """
+    Find the listed expiry closest to a target number of days out.
     
+    Parameters
+    ----------
+    available_expiries : list of str
+        Expiry dates as 'YYYY-MM-DD' strings.
+    target_days : int
+        Desired days to expiry (e.g. 30, 60, 90).
+    today : Timestamp or None
+        Reference date. Defaults to current UTC date.
+    
+    Returns
+    -------
+    (expiry, actual_days) : tuple
+        The chosen expiry string and the actual number of days out.
+    """
+    if today is None:
+        today = pd.Timestamp.now(tz='UTC').normalize()
+    elif today.tz is None:
+        today = today.tz_localize('UTC')
+    
+    target = today + pd.Timedelta(days=target_days)
+    available = [pd.Timestamp(e).tz_localize('UTC') for e in available_expiries]
+    closest = min(available, key=lambda d: abs(d - target))
+    actual_days = (closest - today).days
+    return closest.strftime('%Y-%m-%d'), actual_days
 
 
         
