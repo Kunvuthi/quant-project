@@ -93,11 +93,53 @@ A running record of work completed each day as documentation.
 - Week 1 summary markdown cell written at top of `03_first_spx_smile.ipynb`
 - Branch `feature/week-01-bsm` merged to `main` via PR; tagged `v0.1-week1`
 
+## Week 2 (Jun 18-24): Greeks Deep Dive + GARCH Intro
+
+### Day 6 - Thu Jun 18
+- New module `models/mc_greeks.py` for Monte Carlo sensitivity *estimators*
+  (kept separate from `montecarlo.py`, which owns pricing - LR estimators and
+  control-variate variants will land here next); tested in `04_mc_greeks.ipynb`
+- **Pathwise (PW) Greek estimators** for European call in `bsm_greeks_pw`
+  - Returns `{'delta': (est, se), 'vega': (est, se)}` - never a bare estimate
+  - Antithetic, `n_paths` = total paths convention (matches `bsm_price_mc`);
+    $n_{\text{pairs}} = n_{\text{paths}} // 2$, explicit slice pairing
+    `(arr[:n] + arr[n:]) / 2` rather than reshape - pairing made visually
+    unmissable after Week 1's 590k bug
+  - Delta integrand: $e^{-rT}\,\mathbf 1_{\{S_T>K\}}\,S_T / S_0$
+  - Vega integrand:  $e^{-rT}\,\mathbf 1_{\{S_T>K\}}\,S_T\,(\sqrt{T}\,Z - \sigma T)$
+- **Interchange justified before coding** (the whiteboard bit):
+  - PW needs the *payoff* $f(S_T(\theta, Z))$ Lipschitz in $\theta$ for fixed $Z$
+  - Call payoff $(S_T - K)^+$ is continuous (kink at $K$, hit with prob 0; no jump)
+    $\Rightarrow$ Lipschitz $\Rightarrow$ dominated difference quotient
+    $\Rightarrow$ interchange valid
+  - Load-bearing condition is Lipschitz domination, NOT the measure-zero kink
+- **Analytic pre-validation**: showed $\Delta_{\text{PW}}$ has mean exactly
+  $\Phi(d_1)$ by the martingale identity
+  $\mathbb{E}[\mathbf 1_{\{S_T>K\}}\,S_T] = S_0 e^{rT}\Phi(d_1)$, so the discount
+  cancels to leave $\Phi(d_1)$. MC is an unbiased estimator by construction, not
+  an approximation that happens to land close.
+- **Validation (z-score discipline, 1M paths, seed 42)**:
+  - Delta: PW = 0.63692 +/- 0.00020 vs analytic 0.63683, $z = 0.43$ ok
+  - Vega:  PW = 37.56368 +/- 0.06616 vs analytic 37.52403, $z = 0.60$ ok
+- **Empirical antithetic asymmetry observed**: relative SE for Delta ~0.03%,
+  Vega ~0.18% (6x noisier) at equal path count. Structural: Delta integrand is
+  near-symmetric in $Z$ so antithetic cancels hard; Vega's
+  $(\sqrt{T}\,Z - \sigma T)$ weight flips sign with $Z$ and cancels far less.
+  Not a bug - inherent to the integrand symmetry.
+- **Key takeaway**: PW is the unbiased Greek method that survives the jump to
+  models with no closed form (Heston W4, rBergomi W9), where there is no
+  $\Phi(d_1)$ to differentiate. Bump-and-revalue survives too but pays in bias
+  and variance.
+- One-line PW validity test carried to Day 7: does the payoff itself *jump* as
+  you move the parameter? Kinks survivable, jumps fatal. Call = kink,
+  digital = jump.
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
   functional, cosmetic only
 - All Day 1–5 work pushed to `feature/week-01-bsm` branch on GitHub
+- All Day 6–10 work pushed to `feature/week-02-bsm` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - SPX dividend yield (~1.3%) not modelled - affects forward, hence IV inversion
 - Smile wing noise from bid-ask spreads - SVI smoothing planned for Week 3
