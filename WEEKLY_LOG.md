@@ -134,6 +134,28 @@ A running record of work completed each day as documentation.
   you move the parameter? Kinks survivable, jumps fatal. Call = kink,
   digital = jump.
 
+### Day 7 - Fri Jun 19
+- **Likelihood-ratio (LR) Greek estimators** added to `models/mc_greeks.py`;
+  derived, tested, and documented in `04_mc_greeks.ipynb` (full formula reference
+  and lessons cells live there)
+  - `bsm_greeks_lr` takes a passed-in `payoff: Callable` rather than an
+    `option_type` switch - LR is payoff-agnostic by construction
+  - Delta score $\dfrac{Z}{S_0\sigma\sqrt{T}}$, vega score
+    $\dfrac{Z^2-1}{\sigma} - Z\sqrt{T}$ (trap: $\sigma$ sits in both $m$ and $s$)
+- **Validated (z-score, 1M paths, seed 42)**: LR delta $z = 0.84$, LR vega
+  $z = 1.09$ vs Week 1 analytics. Both unbiased.
+- **PW vs LR**: LR noisier at equal $N$ (delta ~6.5x SE, vega ~4.2x). Antithetic
+  helps integrands odd in $Z$ (LR delta) but not even ones (LR vega's $Z^2$ term).
+  All estimators $O(N^{-1/2})$ - same rate, different constant.
+- **Digital demonstration (the point of the week)**: LR nails
+  $\Delta = e^{-rT}\varphi(d_2)/(S_0\sigma\sqrt{T}) = 0.018762$ ($z = 0.46$); PW
+  returns **exactly** $0 \pm 0$ because the jump payoff has $f' = 0$ a.s. Cannot
+  reuse `bsm_greeks_pw` - the pathwise derivative genuinely does not exist for a jump.
+- **Key lesson (detail in notebook)**: a tiny SE is a red flag, not a green light.
+  SE measures spread, not correctness - the PW digital's $0 \pm 0$ would look like
+  perfect convergence in a model with no analytic truth. Verify payoff is Lipschitz
+  before trusting the SE.
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
