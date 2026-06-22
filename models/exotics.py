@@ -1,7 +1,6 @@
 import sys
 import numpy as np
 from scipy.stats import norm
-sys.path.append('..')  # so we can import from models/
 from models.montecarlo import simulate_gbm_paths   # the primitive stays put
 
 def geometric_asian_price(
