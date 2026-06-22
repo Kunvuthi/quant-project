@@ -156,6 +156,40 @@ A running record of work completed each day as documentation.
   perfect convergence in a model with no analytic truth. Verify payoff is Lipschitz
   before trusting the SE.
 
+### Day 8 - Mon Jun 22
+- **Control variates** for the arithmetic-Asian call; derived, built, validated in
+  `05_asian_option_cv.ipynb` (full reference + lessons cells there)
+  - $Y_{\text{cv}} = Y - c(X - \mu_X)$, unbiased for any $c$; optimal
+    $c^* = \text{Cov}(X,Y)/\text{Var}(X)$ (the OLS slope), giving
+    $\text{Var}(Y_{\text{cv}}^*) = \text{Var}(Y)(1-\rho^2)$
+  - Control $X$ = geometric-Asian call (closed form, lognormal since
+    $\log\bar S_{\text{geo}} = \tfrac1n\sum\log S_{t_i}$ is normal); target $Y$ =
+    arithmetic-Asian (no closed form, forces MC)
+- **New `simulate_gbm_paths`** in `montecarlo.py`: exact log-space stepping,
+  `cumsum` along time, `(n_paths, n_steps)`. General path primitive, reused for all
+  path-dependent payoffs (barriers, stochastic vol W4-9). Validated per-timestep vs
+  martingale $S_0 e^{rt_i}$: max $z = 0.92$.
+- **New `models/exotics.py`** (imports the path primitive): `geometric_asian_price`
+  (closed form via effective $\hat\sigma = \sigma\sqrt{(n+1)(2n+1)/6n^2} \to \sigma/\sqrt3$
+  and carry $\hat b$), `arithmetic_asian_cv` (target + CV estimator)
+  - Geometric variance needs shared-path covariance
+    $\text{Cov}(\log S_{t_i}, \log S_{t_j}) = \sigma^2\min(t_i,t_j)$ - log-prices NOT
+    independent. Validated vs MC: $z = 0.44$. Directional: geo (5.94) < vanilla (10.45).
+- **CV result ($S=K=100$, $T=1$, $r=0.05$, $\sigma=0.2$, $n=12$, 100k paths)**:
+  $\rho = 0.9996$, plain SE 0.0269 -> CV SE 0.000752 (~36x). Measured variance ratio
+  $7.8\times10^{-4}$ matched predicted $1-\rho^2$ to the digit.
+- **Key lesson**: variance reduction buys *compute, not rate* - still $O(N^{-1/2})$.
+  36x SE = ~1300x paths by brute force, bought with one closed form + a covariance.
+  A control variate is a known-answer rehearsal of the same noise; $1-\rho^2$ is the
+  residual variance ($\rho^2 = R^2$).
+- **Refactor 1 - editable install**: added `pyproject.toml` + `models/__init__.py`,
+  `pip install -e .` (own package only, conda-forge stack untouched). Removed
+  `sys.path.append('..')` from all notebooks. Closes Week-1 open issue.
+- **Refactor 2 - per-source clean config**: `CLEAN_DEFAULTS` dict (yfinance/cboe
+  profiles) in `option_chain.py`; `clean_chain` now takes `source=` + optional
+  per-threshold overrides (None-sentinel pattern). Existing explicit-arg calls
+  unchanged; `03` smile counts reproduce (83 / 20 strikes). Closes Week-1 open issue.
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
@@ -165,5 +199,3 @@ A running record of work completed each day as documentation.
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - SPX dividend yield (~1.3%) not modelled - affects forward, hence IV inversion
 - Smile wing noise from bid-ask spreads - SVI smoothing planned for Week 3
-- `sys.path.append('..')` still in notebooks - convert to `pyproject.toml` editable install when it becomes annoying
-- Per-source data hygiene config (yfinance vs CBOE filter defaults) could be extracted from function signature into a config dict - small refactor opportunity
