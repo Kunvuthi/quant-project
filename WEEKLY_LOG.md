@@ -190,6 +190,34 @@ A running record of work completed each day as documentation.
   per-threshold overrides (None-sentinel pattern). Existing explicit-arg calls
   unchanged; `03` smile counts reproduce (83 / 20 strikes). Closes Week-1 open issue.
 
+### Day 9 - Tue Jun 23
+- **New `tests/` folder + pytest scaffold** (good-practice item, pulled forward from
+  W3): `tests/{__init__,conftest,test_bsm}.py`, `[tool.pytest.ini_options]` in
+  `pyproject.toml`. `conftest.py` holds an `atm_params` fixture (the 10.4506 case).
+  Float asserts via `np.isclose`, never `==`.
+- **`bsm_price` generalised with cost-of-carry $b$** (deferred Option B):
+  - $d_1$ uses $b$; spot term gets factor $e^{(b-r)T}$; $K$ term keeps pure $e^{-rT}$
+    discounting. $b$ rides with the underlying (carry/forward); $r$ is always the
+    discount rate.
+  - $b = r$ default (None-sentinel, $b = r$ if None) recovers plain BSM exactly -
+    carry factor $= 1$. $b = r - q$ gives dividend yield $q$ - **closes the SPX
+    dividend open issue**. $b = 0$ is Black-76.
+- **Edge cases handled, vectorised** (closes the "addressed in W2" docstring note):
+  - $T = 0$ -> intrinsic $(S-K)^+$; $\sigma = 0$ -> discounted forward intrinsic
+    $e^{-rT}(Se^{bT}-K)^+$. $S=0$/$K=0$ left to the formula limit (not special-cased).
+  - `np.broadcast_arrays` to align masks; nested `np.where` with $T=0$ taking priority
+    over $\sigma=0$. Denominator dummy-substituted ($1.0$ where degenerate) so the
+    discarded formula branch emits no div-by-zero warning.
+- **Bug caught by a pinned test** (the safety net working day one): zero-vol limit
+  first used $fwd = Se^{(b-r)T}$ (carry-adjusted spot) where it needed the *true*
+  forward $Se^{bT}$. At $b=r$ this collapsed to $e^{-rT}(S-K)^+ = 0$ - a plausible,
+  non-crashing wrong answer. Test pinned to hand-derived 4.877 caught it; fixed with a
+  separate `true_fwd`. Same lesson as the digital's zero-SE: a clean number is not a
+  correct one.
+- **9 tests passing**: canonical ATM, put-call parity (plain + carry), put value,
+  monotonic-in-strike, carry-reduces-to-BSM, T=0 intrinsic, zero-vol forward,
+  vectorised-with-edge.
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
