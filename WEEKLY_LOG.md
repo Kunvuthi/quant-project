@@ -218,6 +218,39 @@ A running record of work completed each day as documentation.
   monotonic-in-strike, carry-reduces-to-BSM, T=0 intrinsic, zero-vol forward,
   vectorised-with-edge.
 
+### Day 10 - Wed Jun 24
+- **GARCH(1,1)** introduced, derived, and fit to real SPX returns;
+  theory + from-scratch methodology in `06_garch.ipynb` (full reference + (B)
+  hand-rolled MLE write-up cells there)
+  - Structure: GARCH(1,1) is **ARMA(1,1) on squared shocks** $\epsilon_t^2$ -
+    persistence $\alpha+\beta$, stationary iff $<1$, long-run variance
+    $\omega/(1-\alpha-\beta)$, geometric mean-reversion. Returns are white noise in
+    *level*; their squares carry the predictable structure.
+  - Fit by MLE (squared-shock innovation not iid -> OLS fails); conditional Gaussian
+    log-lik $-\tfrac12\sum[\ln\sigma_t^2 + \epsilon_t^2/\sigma_t^2]$, $\sigma_t^2$
+    unrolled from the recursion (irreducible loop), constrained $\alpha+\beta<1$.
+  - Day-7 chi-squared thread closed: standardised residuals $\hat z_t^2$ as the
+    *sample* fit diagnostic (Ljung-Box, QQ) - distinct from the constant BSM $\sigma$.
+- **Fit results** (SPX daily, 2016-2026, 2511 returns, spans COVID; `arch` library,
+  percent-scaled): $\omega=0.036$, $\alpha=0.162$, $\beta=0.809$. Persistence
+  $\alpha+\beta=0.971$, half-life 23.4 days, long-run vol 17.7% annualised
+  (matches sample std 1.14% -> internal consistency check passed).
+- **Realised vs implied loop closed** (matched date Jun 24, matched 30-day horizon):
+  - GARCH 30-day-ahead forecast (variance-path-averaged, un-scaled, annualised): **18.2%**
+  - Implied ATM (fresh CBOE pull, 30 DTE expiry 2026-07-24, strike 7370 vs spot 7354): **16.5%**
+  - Implied sits ~1.7 vol pts *below* realised forecast -> options mildly cheap on this
+    signal; long-vol read (gamma P&L > theta if realised exceeds implied). The
+    implied-vs-realised arbitrage from Week-1 IV notes, made concrete.
+  - Caveats logged: no dividend in IV inversion (carry $b=r-q$ would fix, ~0.1-0.2 pt);
+    Gaussian shocks (fat tails -> `dist="t"`); risk-neutral implied vs physical GARCH
+    (variance risk premium - implied *below* realised is the less common config).
+- **Data provenance**: yfinance API rate-limited, Yahoo/Stooq programmatic endpoints
+  blocked for index symbols (^GSPC download licensing-restricted; SPY proxy or manual
+  is the workaround). SPX history obtained via Stooq *manual* download (`^spx_d.csv`).
+  Known cache limitation: `period`-keyed price cache goes stale as history grows -
+  date-stamped key or freshness check needed for Phase 3.
+
+  
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
