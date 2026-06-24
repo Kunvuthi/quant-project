@@ -1,24 +1,24 @@
-import os
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
 import numpy as np
+from typing import Literal
 
-# spx = yf.Ticker("^SPX")
-# expirations = spx.options
-# print(f"Number of expirations available: {len(expirations)}")
-# print(f"First 10 expirations: {expirations[:10]}")
-# print(f"Spot S = {spx.info.get('regularMarketPrice', 'N/A')}")
-
-# today = datetime(2026, 6, 16)
-# target = pd.Timestamp(today) + pd.Timedelta(days=30)
-# print(f"Target ~30 days from today: {target.date()}")
-
-# # Find closest available expiry
-# available = [pd.Timestamp(e) for e in expirations]
-# closest = min(available, key=lambda d: abs(d - target))
-# print(f"Closest available: {closest.date()} ({(closest - pd.Timestamp(today)).days})")
+CLEAN_DEFAULTS = {
+    "yfinance": {
+        "min_volume": 5,
+        "min_open_interest": 0,        # SPX index OI is always 0 via yfinance
+        "max_relative_spread": 0.5,
+        "max_staleness_days": 7,
+    },
+    "cboe": {
+        "min_volume": 5,
+        "min_open_interest": 10,       # CBOE has real OI; tighter
+        "max_relative_spread": 0.30,
+        "max_staleness_days": 2,
+    },
+}
 
 def _parse_occ_symbol(symbol: str) -> dict:
     """Parse OCC option symbol like 'SPXW260618C00200000'."""
@@ -129,10 +129,11 @@ def filter_by_expiry(
 
 def clean_chain(
     df: pd.DataFrame,
-    min_volume: int = 10,
-    min_open_interest: int = 1,
-    max_relative_spread: float = 0.5,
-    max_staleness_days: int = 2,
+    source: Literal["yfinance", "cboe"] = "cboe",
+    min_volume: int | None = None,
+    min_open_interest: int | None = None,
+    max_relative_spread: float | None = None,
+    max_staleness_days: int | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame:
     """
@@ -140,27 +141,44 @@ def clean_chain(
     
     Returns a copy with a new 'mid' column = (bid + ask) / 2.
     """
+    if source not in CLEAN_DEFAULTS:
+        raise ValueError(
+            f"source must be one of {list(CLEAN_DEFAULTS)}, got {source!r}"
+        )
+
+    # start from the source profile, override only explicitly-passed thresholds
+    params = {**CLEAN_DEFAULTS[source]}
+    overrides = {
+        "min_volume": min_volume,
+        "min_open_interest": min_open_interest,
+        "max_relative_spread": max_relative_spread,
+        "max_staleness_days": max_staleness_days,
+    }
+    for key, val in overrides.items():
+        if val is not None:
+            params[key] = val
+
     df = df.copy()
-    
+
     if verbose: print(f"Started: {len(df)} rows")
     df = df[df['bid'] > 0]
     if verbose: print(f"After bid > 0:               {len(df)}")
-    
+
     df['mid'] = (df['bid'] + df['ask']) / 2
-    
-    df = df[(df['ask'] - df['bid']) / df['mid']  <= max_relative_spread]
+
+    df = df[(df['ask'] - df['bid']) / df['mid'] <= params["max_relative_spread"]]
     if verbose: print(f"After spread filter:         {len(df)}")
-    df = df[df['volume'].fillna(0) >= min_volume]
+    df = df[df['volume'].fillna(0) >= params["min_volume"]]
     if verbose: print(f"After volume filter:         {len(df)}")
-    df = df[df['openInterest'] >= min_open_interest]
+    df = df[df['openInterest'] >= params["min_open_interest"]]
     if verbose: print(f"After open interest filter:  {len(df)}")
-    
+
     df['lastTradeDate'] = pd.to_datetime(df['lastTradeDate'], utc=True)
     now = pd.Timestamp.now(tz='UTC')
     staleness_days = (now - df['lastTradeDate']).dt.total_seconds() / 86400
-    df = df[staleness_days <= max_staleness_days]
+    df = df[staleness_days <= params["max_staleness_days"]]
     if verbose: print(f"After staleness filter:      {len(df)}")
-    
+
     return df
 
 def find_closest_expiry(

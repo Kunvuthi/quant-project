@@ -9,48 +9,61 @@ def bsm_price(
     T: ArrayLike,
     r: float,
     sigma: ArrayLike,
-    option_type: Literal['call', 'put'] = 'call'
+    option_type: Literal['call', 'put'] = 'call',
+    b: float | None = None,
 ) -> np.ndarray:
     """
-    Black-Scholes-Merton European option price.
-    
-    Parameters
-    ----------
-    S : float or array
-        Spot price(s).
-    K : float or array
-        Strike price(s).
-    T : float or array
-        Time to expiry in years.
-    r : float
-        Risk-free rate (continuously compounded).
-    sigma : float or array
-        Volatility (annualised, e.g. 0.2 for 20%).
-    option_type : {'call', 'put'}, default 'call'
-        
-    Returns
-    -------
-    price : float or array
-        Same shape as the broadcasted inputs.
-        
-    Notes
-    -----
-    Edge cases (T=0, sigma=0, S=0, K=0) are not handled in this version 
-    and will produce NaN or inf. Will be addressed in Week 2.
+    Black-Scholes-Merton European option price, generalised with cost-of-carry b.
 
+    b is the cost of carry on the underlying; r is the discount rate.
+      b = r        -> plain BSM, no dividend (default)
+      b = r - q    -> continuous dividend yield q
+      b = 0        -> Black-76 (option on a future)
+    Defaults to b = r, recovering the standard BSM formula exactly.
     """
-    
     if option_type not in ('call', 'put'):
         raise ValueError("option_type must be 'call' or 'put'")
-    
-    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-    
-    # Standard BSM formula
+
+    if b is None:
+        b = r
+
+    # broadcast everything to a common shape so masks line up
+    S, K, T, sigma = np.broadcast_arrays(
+        np.asarray(S, dtype=float), np.asarray(K, dtype=float),
+        np.asarray(T, dtype=float), np.asarray(sigma, dtype=float),
+    )
+
+    carry = np.exp((b - r) * T)
+    fwd = S * carry                       # = S e^{(b-r)T}, the spot term
+    true_fwd = S * np.exp(b * T) 
+
+    # --- degenerate mask: where the standard formula divides by zero ---
+    vol_time = sigma * np.sqrt(T)         # the denominator in d1
+    degenerate = vol_time <= 0            # True where T==0 OR sigma==0
+
+    # --- safe formula branch: substitute a dummy 1.0 in the denominator
+    #     wherever it's degenerate, so no div-by-zero warning is emitted.
+    #     The masked-out results are discarded by np.where below.
+    safe_vt = np.where(degenerate, 1.0, vol_time)
+    d1 = (np.log(S / K) + (b + 0.5 * sigma ** 2) * T) / safe_vt
+    d2 = d1 - safe_vt
+
     if option_type == 'call':
-        return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+        formula = fwd * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+        intrinsic_T0 = np.maximum(S - K, 0.0)
+        intrinsic_vol0 = np.exp(-r * T) * np.maximum(true_fwd - K, 0.0)
     else:
-        return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+        formula = K * np.exp(-r * T) * norm.cdf(-d2) - fwd * norm.cdf(-d1)
+        intrinsic_T0 = np.maximum(K - S, 0.0)
+        intrinsic_vol0 = np.exp(-r * T) * np.maximum(K - true_fwd, 0.0)
+
+    # --- select limits: T==0 takes priority, then sigma==0, else formula ---
+    price = np.where(
+        T <= 0, intrinsic_T0,
+        np.where(sigma <= 0, intrinsic_vol0, formula),
+    )
+
+    return price
 
 def bsm_greeks(
     S: ArrayLike,

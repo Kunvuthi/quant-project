@@ -93,13 +93,170 @@ A running record of work completed each day as documentation.
 - Week 1 summary markdown cell written at top of `03_first_spx_smile.ipynb`
 - Branch `feature/week-01-bsm` merged to `main` via PR; tagged `v0.1-week1`
 
+## Week 2 (Jun 18-24): Greeks Deep Dive + GARCH Intro
+
+### Day 6 - Thu Jun 18
+- New module `models/mc_greeks.py` for Monte Carlo sensitivity *estimators*
+  (kept separate from `montecarlo.py`, which owns pricing - LR estimators and
+  control-variate variants will land here next); tested in `04_mc_greeks.ipynb`
+- **Pathwise (PW) Greek estimators** for European call in `bsm_greeks_pw`
+  - Returns `{'delta': (est, se), 'vega': (est, se)}` - never a bare estimate
+  - Antithetic, `n_paths` = total paths convention (matches `bsm_price_mc`);
+    $n_{\text{pairs}} = n_{\text{paths}} // 2$, explicit slice pairing
+    `(arr[:n] + arr[n:]) / 2` rather than reshape - pairing made visually
+    unmissable after Week 1's 590k bug
+  - Delta integrand: $e^{-rT}\,\mathbf 1_{\{S_T>K\}}\,S_T / S_0$
+  - Vega integrand:  $e^{-rT}\,\mathbf 1_{\{S_T>K\}}\,S_T\,(\sqrt{T}\,Z - \sigma T)$
+- **Interchange justified before coding** (the whiteboard bit):
+  - PW needs the *payoff* $f(S_T(\theta, Z))$ Lipschitz in $\theta$ for fixed $Z$
+  - Call payoff $(S_T - K)^+$ is continuous (kink at $K$, hit with prob 0; no jump)
+    $\Rightarrow$ Lipschitz $\Rightarrow$ dominated difference quotient
+    $\Rightarrow$ interchange valid
+  - Load-bearing condition is Lipschitz domination, NOT the measure-zero kink
+- **Analytic pre-validation**: showed $\Delta_{\text{PW}}$ has mean exactly
+  $\Phi(d_1)$ by the martingale identity
+  $\mathbb{E}[\mathbf 1_{\{S_T>K\}}\,S_T] = S_0 e^{rT}\Phi(d_1)$, so the discount
+  cancels to leave $\Phi(d_1)$. MC is an unbiased estimator by construction, not
+  an approximation that happens to land close.
+- **Validation (z-score discipline, 1M paths, seed 42)**:
+  - Delta: PW = 0.63692 +/- 0.00020 vs analytic 0.63683, $z = 0.43$ ok
+  - Vega:  PW = 37.56368 +/- 0.06616 vs analytic 37.52403, $z = 0.60$ ok
+- **Empirical antithetic asymmetry observed**: relative SE for Delta ~0.03%,
+  Vega ~0.18% (6x noisier) at equal path count. Structural: Delta integrand is
+  near-symmetric in $Z$ so antithetic cancels hard; Vega's
+  $(\sqrt{T}\,Z - \sigma T)$ weight flips sign with $Z$ and cancels far less.
+  Not a bug - inherent to the integrand symmetry.
+- **Key takeaway**: PW is the unbiased Greek method that survives the jump to
+  models with no closed form (Heston W4, rBergomi W9), where there is no
+  $\Phi(d_1)$ to differentiate. Bump-and-revalue survives too but pays in bias
+  and variance.
+- One-line PW validity test carried to Day 7: does the payoff itself *jump* as
+  you move the parameter? Kinks survivable, jumps fatal. Call = kink,
+  digital = jump.
+
+### Day 7 - Fri Jun 19
+- **Likelihood-ratio (LR) Greek estimators** added to `models/mc_greeks.py`;
+  derived, tested, and documented in `04_mc_greeks.ipynb` (full formula reference
+  and lessons cells live there)
+  - `bsm_greeks_lr` takes a passed-in `payoff: Callable` rather than an
+    `option_type` switch - LR is payoff-agnostic by construction
+  - Delta score $\dfrac{Z}{S_0\sigma\sqrt{T}}$, vega score
+    $\dfrac{Z^2-1}{\sigma} - Z\sqrt{T}$ (trap: $\sigma$ sits in both $m$ and $s$)
+- **Validated (z-score, 1M paths, seed 42)**: LR delta $z = 0.84$, LR vega
+  $z = 1.09$ vs Week 1 analytics. Both unbiased.
+- **PW vs LR**: LR noisier at equal $N$ (delta ~6.5x SE, vega ~4.2x). Antithetic
+  helps integrands odd in $Z$ (LR delta) but not even ones (LR vega's $Z^2$ term).
+  All estimators $O(N^{-1/2})$ - same rate, different constant.
+- **Digital demonstration (the point of the week)**: LR nails
+  $\Delta = e^{-rT}\varphi(d_2)/(S_0\sigma\sqrt{T}) = 0.018762$ ($z = 0.46$); PW
+  returns **exactly** $0 \pm 0$ because the jump payoff has $f' = 0$ a.s. Cannot
+  reuse `bsm_greeks_pw` - the pathwise derivative genuinely does not exist for a jump.
+- **Key lesson (detail in notebook)**: a tiny SE is a red flag, not a green light.
+  SE measures spread, not correctness - the PW digital's $0 \pm 0$ would look like
+  perfect convergence in a model with no analytic truth. Verify payoff is Lipschitz
+  before trusting the SE.
+
+### Day 8 - Mon Jun 22
+- **Control variates** for the arithmetic-Asian call; derived, built, validated in
+  `05_asian_option_cv.ipynb` (full reference + lessons cells there)
+  - $Y_{\text{cv}} = Y - c(X - \mu_X)$, unbiased for any $c$; optimal
+    $c^* = \text{Cov}(X,Y)/\text{Var}(X)$ (the OLS slope), giving
+    $\text{Var}(Y_{\text{cv}}^*) = \text{Var}(Y)(1-\rho^2)$
+  - Control $X$ = geometric-Asian call (closed form, lognormal since
+    $\log\bar S_{\text{geo}} = \tfrac1n\sum\log S_{t_i}$ is normal); target $Y$ =
+    arithmetic-Asian (no closed form, forces MC)
+- **New `simulate_gbm_paths`** in `montecarlo.py`: exact log-space stepping,
+  `cumsum` along time, `(n_paths, n_steps)`. General path primitive, reused for all
+  path-dependent payoffs (barriers, stochastic vol W4-9). Validated per-timestep vs
+  martingale $S_0 e^{rt_i}$: max $z = 0.92$.
+- **New `models/exotics.py`** (imports the path primitive): `geometric_asian_price`
+  (closed form via effective $\hat\sigma = \sigma\sqrt{(n+1)(2n+1)/6n^2} \to \sigma/\sqrt3$
+  and carry $\hat b$), `arithmetic_asian_cv` (target + CV estimator)
+  - Geometric variance needs shared-path covariance
+    $\text{Cov}(\log S_{t_i}, \log S_{t_j}) = \sigma^2\min(t_i,t_j)$ - log-prices NOT
+    independent. Validated vs MC: $z = 0.44$. Directional: geo (5.94) < vanilla (10.45).
+- **CV result ($S=K=100$, $T=1$, $r=0.05$, $\sigma=0.2$, $n=12$, 100k paths)**:
+  $\rho = 0.9996$, plain SE 0.0269 -> CV SE 0.000752 (~36x). Measured variance ratio
+  $7.8\times10^{-4}$ matched predicted $1-\rho^2$ to the digit.
+- **Key lesson**: variance reduction buys *compute, not rate* - still $O(N^{-1/2})$.
+  36x SE = ~1300x paths by brute force, bought with one closed form + a covariance.
+  A control variate is a known-answer rehearsal of the same noise; $1-\rho^2$ is the
+  residual variance ($\rho^2 = R^2$).
+- **Refactor 1 - editable install**: added `pyproject.toml` + `models/__init__.py`,
+  `pip install -e .` (own package only, conda-forge stack untouched). Removed
+  `sys.path.append('..')` from all notebooks. Closes Week-1 open issue.
+- **Refactor 2 - per-source clean config**: `CLEAN_DEFAULTS` dict (yfinance/cboe
+  profiles) in `option_chain.py`; `clean_chain` now takes `source=` + optional
+  per-threshold overrides (None-sentinel pattern). Existing explicit-arg calls
+  unchanged; `03` smile counts reproduce (83 / 20 strikes). Closes Week-1 open issue.
+
+### Day 9 - Tue Jun 23
+- **New `tests/` folder + pytest scaffold** (good-practice item, pulled forward from
+  W3): `tests/{__init__,conftest,test_bsm}.py`, `[tool.pytest.ini_options]` in
+  `pyproject.toml`. `conftest.py` holds an `atm_params` fixture (the 10.4506 case).
+  Float asserts via `np.isclose`, never `==`.
+- **`bsm_price` generalised with cost-of-carry $b$** (deferred Option B):
+  - $d_1$ uses $b$; spot term gets factor $e^{(b-r)T}$; $K$ term keeps pure $e^{-rT}$
+    discounting. $b$ rides with the underlying (carry/forward); $r$ is always the
+    discount rate.
+  - $b = r$ default (None-sentinel, $b = r$ if None) recovers plain BSM exactly -
+    carry factor $= 1$. $b = r - q$ gives dividend yield $q$ - **closes the SPX
+    dividend open issue**. $b = 0$ is Black-76.
+- **Edge cases handled, vectorised** (closes the "addressed in W2" docstring note):
+  - $T = 0$ -> intrinsic $(S-K)^+$; $\sigma = 0$ -> discounted forward intrinsic
+    $e^{-rT}(Se^{bT}-K)^+$. $S=0$/$K=0$ left to the formula limit (not special-cased).
+  - `np.broadcast_arrays` to align masks; nested `np.where` with $T=0$ taking priority
+    over $\sigma=0$. Denominator dummy-substituted ($1.0$ where degenerate) so the
+    discarded formula branch emits no div-by-zero warning.
+- **Bug caught by a pinned test** (the safety net working day one): zero-vol limit
+  first used $fwd = Se^{(b-r)T}$ (carry-adjusted spot) where it needed the *true*
+  forward $Se^{bT}$. At $b=r$ this collapsed to $e^{-rT}(S-K)^+ = 0$ - a plausible,
+  non-crashing wrong answer. Test pinned to hand-derived 4.877 caught it; fixed with a
+  separate `true_fwd`. Same lesson as the digital's zero-SE: a clean number is not a
+  correct one.
+- **9 tests passing**: canonical ATM, put-call parity (plain + carry), put value,
+  monotonic-in-strike, carry-reduces-to-BSM, T=0 intrinsic, zero-vol forward,
+  vectorised-with-edge.
+
+### Day 10 - Wed Jun 24
+- **GARCH(1,1)** introduced, derived, and fit to real SPX returns;
+  theory + from-scratch methodology in `06_garch.ipynb` (full reference + (B)
+  hand-rolled MLE write-up cells there)
+  - Structure: GARCH(1,1) is **ARMA(1,1) on squared shocks** $\epsilon_t^2$ -
+    persistence $\alpha+\beta$, stationary iff $<1$, long-run variance
+    $\omega/(1-\alpha-\beta)$, geometric mean-reversion. Returns are white noise in
+    *level*; their squares carry the predictable structure.
+  - Fit by MLE (squared-shock innovation not iid -> OLS fails); conditional Gaussian
+    log-lik $-\tfrac12\sum[\ln\sigma_t^2 + \epsilon_t^2/\sigma_t^2]$, $\sigma_t^2$
+    unrolled from the recursion (irreducible loop), constrained $\alpha+\beta<1$.
+  - Day-7 chi-squared thread closed: standardised residuals $\hat z_t^2$ as the
+    *sample* fit diagnostic (Ljung-Box, QQ) - distinct from the constant BSM $\sigma$.
+- **Fit results** (SPX daily, 2016-2026, 2511 returns, spans COVID; `arch` library,
+  percent-scaled): $\omega=0.036$, $\alpha=0.162$, $\beta=0.809$. Persistence
+  $\alpha+\beta=0.971$, half-life 23.4 days, long-run vol 17.7% annualised
+  (matches sample std 1.14% -> internal consistency check passed).
+- **Realised vs implied loop closed** (matched date Jun 24, matched 30-day horizon):
+  - GARCH 30-day-ahead forecast (variance-path-averaged, un-scaled, annualised): **18.2%**
+  - Implied ATM (fresh CBOE pull, 30 DTE expiry 2026-07-24, strike 7370 vs spot 7354): **16.5%**
+  - Implied sits ~1.7 vol pts *below* realised forecast -> options mildly cheap on this
+    signal; long-vol read (gamma P&L > theta if realised exceeds implied). The
+    implied-vs-realised arbitrage from Week-1 IV notes, made concrete.
+  - Caveats logged: no dividend in IV inversion (carry $b=r-q$ would fix, ~0.1-0.2 pt);
+    Gaussian shocks (fat tails -> `dist="t"`); risk-neutral implied vs physical GARCH
+    (variance risk premium - implied *below* realised is the less common config).
+- **Data provenance**: yfinance API rate-limited, Yahoo/Stooq programmatic endpoints
+  blocked for index symbols (^GSPC download licensing-restricted; SPY proxy or manual
+  is the workaround). SPX history obtained via Stooq *manual* download (`^spx_d.csv`).
+  Known cache limitation: `period`-keyed price cache goes stale as history grows -
+  date-stamped key or freshness check needed for Phase 3.
+
+  
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
   functional, cosmetic only
 - All Day 1–5 work pushed to `feature/week-01-bsm` branch on GitHub
+- All Day 6–10 work pushed to `feature/week-02-bsm` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - SPX dividend yield (~1.3%) not modelled - affects forward, hence IV inversion
 - Smile wing noise from bid-ask spreads - SVI smoothing planned for Week 3
-- `sys.path.append('..')` still in notebooks - convert to `pyproject.toml` editable install when it becomes annoying
-- Per-source data hygiene config (yfinance vs CBOE filter defaults) could be extracted from function signature into a config dict - small refactor opportunity
