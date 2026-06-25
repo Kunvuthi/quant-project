@@ -214,7 +214,56 @@ def find_closest_expiry(
     actual_days = (closest - today).days
     return closest.strftime('%Y-%m-%d'), actual_days
 
+def implied_vol_with_forward(price, S, K, T, r, F, option_type, bsm_implied_vol):
+    """
+    Invert implied vol using a parity-implied forward F instead of assuming F = S e^{rT}.
+    The carry b is set so the pricer's forward matches F: F = S e^{bT} => b = ln(F/S)/T.
+    """
+    b = np.log(F / S) / T
+    # bsm_implied_vol must accept and pass through b to bsm_price(..., b=b)
+    return bsm_implied_vol(price, S, K, T, r, option_type, b=b)
 
+def implied_forward_from_parity(calls, puts, r, T):
+    """
+    Extract the forward F from put-call parity across common strikes.
+    F = K + e^{rT} (C - P), averaged over strikes (robust to per-strike noise).
+
+    Parameters
+    ----------
+    calls, puts : DataFrame
+        Cleaned chains for ONE expiry, each with 'strike' and 'mid' columns.
+    r : float
+        Risk-free rate (continuously compounded).
+    T : float
+        Time to expiry in years.
+
+    Returns
+    -------
+    F : float
+        Implied forward price.
+    q : float
+        Implied continuous dividend yield, backed out via F = S e^{(r-q)T}.
+        (Returned as None here; computed by the caller who knows spot.)
+    """
+    # align calls and puts on common strikes
+    merged = pd.merge(
+        calls[['strike', 'mid']].rename(columns={'mid': 'call_mid'}),
+        puts[['strike', 'mid']].rename(columns={'mid': 'put_mid'}),
+        on='strike',
+    )
+
+    # per-strike forward estimate from parity
+    merged['F_est'] = merged['strike'] + np.exp(r * T) * (
+        merged['call_mid'] - merged['put_mid']
+    )
+
+    # robust central estimate: the parity forward is most reliable near ATM,
+    # where |C - P| is large vs the spread. Use the strikes closest to where
+    # C - P changes sign (the ATM-forward cross), or just take the median as
+    # a noise-robust summary.
+    F = merged['F_est'].median()
+
+    return F, merged
         
     
     

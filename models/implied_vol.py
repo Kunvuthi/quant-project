@@ -12,6 +12,7 @@ def bsm_implied_vol(
     r: float,
     option_type: Literal['call', 'put'] = 'call',
     tol: float = 1e-8,
+    b: float | None = None, 
 ) -> float:
     """
     Implied volatility via Brent's method.
@@ -26,19 +27,23 @@ def bsm_implied_vol(
     if option_type not in ('call', 'put'):
         raise ValueError("option_type must be 'call' or 'put'")
     
-    # Arbitrage Bounds
+    if b is None:
+        b = r
+    
+    # Arbitrage bounds (with carry b): forward = S e^{(b-r)T}, strike discounts at r
+    fwd = S * np.exp((b - r) * T)
     if option_type == 'call':
-        LB = np.maximum(S - K*np.exp(-r*T), 0)
-        UB = S
+        LB = np.maximum(fwd - K * np.exp(-r * T), 0)
+        UB = fwd
     else:
-        LB = np.maximum(K*np.exp(-r*T) - S, 0)
-        UB = K*np.exp(-r*T)
+        LB = np.maximum(K * np.exp(-r * T) - fwd, 0)
+        UB = K * np.exp(-r * T)
     
     if price < LB or price > UB:
         return np.nan
     
     def f(sigma):
-        return bsm_price(S, K, T, r, sigma, option_type) - price
+        return bsm_price(S, K, T, r, sigma, option_type, b) - price
     
     sigma_imp = brentq(f, 1e-6, 5.0, xtol=tol)    
     
@@ -50,6 +55,7 @@ def compute_smile(
     T: float,
     r: float = 0.045,
     option_type: Literal['call', 'put'] = 'call',
+    b: float | None = None, 
 ) -> pd.DataFrame:
     """
     Compute implied volatility for each row in a cleaned chain.
@@ -67,6 +73,7 @@ def compute_smile(
         T=T,
         r=r,
         option_type=option_type,
+        b=b
     ),
     axis=1,
 )
