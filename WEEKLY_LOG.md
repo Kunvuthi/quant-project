@@ -250,6 +250,45 @@ A running record of work completed each day as documentation.
   Known cache limitation: `period`-keyed price cache goes stale as history grows -
   date-stamped key or freshness check needed for Phase 3.
 
+## Week 3 (Jun 25 - Jul 1): Dupire Local Volatility
+
+### Day 11 - Thu Jun 25
+- Branch `feature/week-03-dupire` off `main`.
+- **Closed the carry-in-IV loop** (deferred W2 item): threaded cost-of-carry $b$ through
+  `bsm_implied_vol` and `compute_smile` so IV inverts against the true forward
+  $F = Se^{(b-r)T}$, not the no-dividend $Se^{rT}$.
+  - **Fixed arbitrage bounds for carry**: strike discounts at $r$, spot/forward grows at
+    $b$. Call $\in [\max(Se^{(b-r)T} - Ke^{-rT}, 0),\ Se^{(b-r)T}]$; put upper bound
+    $Ke^{-rT}$. Reduces exactly to the W1 no-dividend bounds when $b=r$.
+- **First tests for the IV inverter** (`tests/test_implied_vol.py`, 5 tests): round-trip
+  call/put, round-trip with carry ($b \ne r$ - guards today's change), OTM strikes,
+  arbitrage-violation -> NaN. **14 tests passing** total.
+- **Parity-implied forward** (`implied_forward_from_parity` in `option_chain.py`):
+  $F = K + e^{rT}(C - P)$ across common strikes, median for robustness. The
+  market-implied (option-3) approach - no external dividend input.
+  - **Caught a bad data point**: CBOE `current_price` field (7554) was stale/wrong;
+    actual SPX ~7410 (verified). Parity forward (7443.7) agreed across all 19 strikes to
+    4 sig figs - **the parity forward is more trustworthy than the reported spot**. This
+    is why desks use parity forwards. Real data-hygiene lesson.
+- **Dupire setup + intuition** documented in `07_dupire.ipynb`:
+  - Local vol = BSM with constant $\sigma$ promoted to a function $\sigma_{\text{loc}}(S,t)$.
+    Still one-factor, arbitrage-free, complete - but NOT lognormal, NOT closed-form.
+    BSM is the special case $\sigma_{\text{loc}} = $ const. Non-lognormality is the point
+    (it is what fits the smile).
+  - Derivation roadmap: **Fokker-Planck** (forward Kolmogorov - differentiates terminal
+    $(K,T)$, the surface axes; vs backward, which prices one option) -> **Breeden-
+    Litzenberger** ($\partial^2 C/\partial K^2 = e^{-rT}p$, density from prices) ->
+    substitute + solve for $\sigma_{\text{loc}}^2$.
+  - **Structural reading of Dupire's formula**: $\sigma^2$ lives only in the FP diffusion
+    term, so isolating it = dividing by the density term -> density ($\partial^2 C/\partial K^2$)
+    lands in the **denominator**. Practical curse: density -> 0 in the wings, so
+    $\sigma_{\text{loc}}$ blows up there. Exact in theory, minefield in practice - needs a
+    smooth arbitrage-free surface BEFORE differentiating.
+- **PARKED** (data pipeline issues, rebuild when able):
+  - CBOE `current_price` unreliable (use parity forward instead)
+  - yfinance fetch broken at notebook top
+  - full clean smile re-extraction
+  - idea: parity-forward sanity guard (warn if |implied q| > 5%) in `implied_forward_from_parity`
   
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
@@ -257,6 +296,6 @@ A running record of work completed each day as documentation.
   functional, cosmetic only
 - All Day 1–5 work pushed to `feature/week-01-bsm` branch on GitHub
 - All Day 6–10 work pushed to `feature/week-02-bsm` branch on GitHub
+- All Day 11–15 work pushed to `feature/week-03-dupire` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
-- SPX dividend yield (~1.3%) not modelled - affects forward, hence IV inversion
 - Smile wing noise from bid-ask spreads - SVI smoothing planned for Week 3
