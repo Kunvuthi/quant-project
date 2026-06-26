@@ -289,6 +289,34 @@ A running record of work completed each day as documentation.
   - yfinance fetch broken at notebook top
   - full clean smile re-extraction
   - idea: parity-forward sanity guard (warn if |implied q| > 5%) in `implied_forward_from_parity`
+
+### Day 12 - Fri Jun 26
+- New packages `pricing/` and `calibration/` (added to `pyproject.toml`, reinstalled).
+- **`calibration/dupire.py`** - `dupire_local_vol`: extracts $\sigma_{\text{loc}}(K,T)$
+  from a call-price grid via FD derivatives + Dupire's formula. Density-floor mask
+  (NaN where $\partial^2C/\partial K^2$ too small) + verbose masking report.
+  - **Case (a) - constant-vol validation**: Dupire on BSM prices returns flat 0.20,
+    interior mean 0.2000 std 0.0005. Wings blow up (worst K=120/T=0.1 -> 0.34) **on
+    clean noiseless data** - the denominator curse, exactly as derived.
+- **`pricing/pde.py`** - Crank-Nicolson local-vol PDE pricer (log-space grid,
+  tridiagonal operator with node-dependent vol, asymptotic boundaries, backward march).
+  - `setup_grid` (log-uniform in $x=\ln S$, uniform in $t$), `build_operator_diagonals`
+    (the FD stencil coefficients), `cn_step` (sparse tridiagonal solve via
+    `scipy.sparse`), `price_call_localvol` (assembles + marches + interpolates at $S_0$).
+  - **Checkpoint 1**: reproduces `bsm_price` to second order - error quarters per grid
+    doubling (ratios 4.11, 4.13, 4.63). Confirms $O(\Delta x^2, \Delta t^2)$.
+- **Case (b) - Dupire round-trip** (the week's main result): price under known linear
+  skew ($\beta=-0.5$) -> extract -> recover. Mean error 0.008 over surface 0.186-0.216;
+  error concentrated only in high-$K$/long-$T$ corner (density thinning). Extractor
+  recovers genuine curvature where density supports it.
+- **Two bugs caught**:
+  1. nested `np.gradient` for $\partial^2C/\partial K^2$ -> sawtooth (even/odd node
+     decoupling); fixed with direct stencil $(C_{i+1}-2C_i+C_{i-1})/\Delta K^2$
+  2. $\beta=-0.1$ test surface too flat to test anything; needed $\beta=-0.5$
+- **TODO (real-data refinements)**: density floor too lax for mild corner instability
+  (curvature-aware mask needed); non-uniform-strike second difference for real chains;
+  forward-PDE pricer would give whole strike rows per solve (vs 837 backward solves here).
+- Notebook: full setup/intuition + implementation + lessons in `07_dupire.ipynb`.
   
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
@@ -299,3 +327,8 @@ A running record of work completed each day as documentation.
 - All Day 11–15 work pushed to `feature/week-03-dupire` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - Smile wing noise from bid-ask spreads - SVI smoothing planned for Week 3
+- **Phase 3 note**: adopt QuantLib (conda-forge `quantlib`) as the production pricing
+  reference - cross-validate own pricers against it, and lean on it for the pricing layer
+  in backtesting so own code focuses on portfolio/strategy logic. Build-to-learn now,
+  library-in-production later. (Large C++ dependency - add deliberately when needed, not
+  before.)
