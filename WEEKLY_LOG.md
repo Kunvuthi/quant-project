@@ -317,6 +317,28 @@ A running record of work completed each day as documentation.
   (curvature-aware mask needed); non-uniform-strike second difference for real chains;
   forward-PDE pricer would give whole strike rows per solve (vs 837 backward solves here).
 - Notebook: full setup/intuition + implementation + lessons in `07_dupire.ipynb`.
+
+### Day 13 - Mon Jun 29
+- **Curvature-aware mask** added to `dupire_local_vol`: per-maturity *relative* density
+  floor (mask where $\partial^2_K C < \epsilon \cdot \max_K \partial^2_K C$ for that row,
+  $\epsilon=0.01$) OR'd with the absolute floor. Per-maturity peak (`keepdims=True`
+  broadcast) is fairer than global - density magnitude falls with maturity, so each row
+  judged on its own peak. Verbose report now separates absolute vs relative masking.
+- **Case-(b) round-trip properly validated** after a four-hypothesis debugging chase
+  (detail in `07_dupire.ipynb` lessons). Root cause: coarse PDE grid (n=100) prices,
+  differentiated by $\partial_T$, produced a long-T noise band - NOT density, NOT edges,
+  NOT bad prices. Density at the "worst" point was 88% of peak; the error map showed a
+  T-band, not a corner. **Fix: re-price at n=200.** Max report error 0.88 -> 0.026,
+  mean 0.054 -> 0.003. Clean recovery of the $\beta=-0.5$ linear skew.
+- **Key principles banked**: (1) FD amplifies the input's noise floor - extraction is far
+  more price-noise-sensitive than direct price comparison; a grid fine enough to *price*
+  can be too coarse to *differentiate*. (2) Visualize the whole error field early - its
+  spatial structure IS the diagnosis.
+- **Type hints**: `pricing/pde.py` annotated to house style (`Callable[[np.ndarray, float],
+  np.ndarray]` for the local-vol fn, full tuple return types).
+- **Stale-notebook-state caution**: hit a K_grid/sigma_recovered size mismatch from
+  re-running cells out of order; resolved by kernel restart. Argues for the pytest
+  coverage (clean execution every run) queued for tomorrow.
   
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
