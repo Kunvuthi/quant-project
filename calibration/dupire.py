@@ -1,6 +1,15 @@
 import numpy as np
 
-def dupire_local_vol(C, K_grid, T_grid, r, q=0.0, density_floor=1e-6, verbose=True):
+def dupire_local_vol(
+    C: np.ndarray,
+    K_grid: np.ndarray,
+    T_grid: np.ndarray,
+    r: float,
+    q: float = 0.0,
+    density_floor: float = 1e-6,
+    epsilon: float = 1e-2,
+    verbose: bool = True,
+) -> np.ndarray:
     """
     Extract the Dupire local-vol surface from a grid of call prices.
 
@@ -40,30 +49,26 @@ def dupire_local_vol(C, K_grid, T_grid, r, q=0.0, density_floor=1e-6, verbose=Tr
     denominator = 0.5 * K**2 * d2Cd2K
     
     # mask where the density (d2C/dK2) is too small to trust the division
-    bad = d2Cd2K < density_floor
+    row_peak = np.max(d2Cd2K, axis=1, keepdims=True)   # shape (n_T, 1)
+    relative_floor = epsilon * row_peak
+    abs_bad = d2Cd2K < density_floor
+    rel_bad = d2Cd2K < relative_floor
+    bad = abs_bad | rel_bad
     sigma2_loc = np.full_like(C, np.nan)
     sigma2_loc[~bad] = numerator[~bad] / denominator[~bad]
-    
-    sigma_loc = np.sqrt(sigma2_loc)   # sqrt of negative -> nan (extra safety)
-    
+    sigma_loc = np.sqrt(sigma2_loc)
+
     if verbose:
         n_total = C.size
-        n_density = int(bad.sum())                          # masked by density floor
-        n_nan = int(np.isnan(sigma_loc).sum())              # total nan (density + neg variance)
-        n_negvar = n_nan - n_density                        # additionally lost to negative variance
+        n_abs = int(abs_bad.sum())
+        n_rel = int((rel_bad & ~abs_bad).sum())     # relative-only (not already caught by absolute)
+        n_nan = int(np.isnan(sigma_loc).sum())
+        n_negvar = n_nan - int(bad.sum())
         print(f"Dupire extraction: {n_total} grid points")
-        print(f"  masked (density < {density_floor:g}): {n_density} "
-              f"({100*n_density/n_total:.1f}%) - untrustworthy wings")
+        print(f"  masked (absolute density < {density_floor:g}): {n_abs}")
+        print(f"  masked (relative, < {epsilon:g} x row peak): {n_rel}")
         if n_negvar > 0:
-            print(f"  additional NaN (negative variance from FD error): {n_negvar}")
-        if n_density > 0:
-            # report the strike/maturity extent of the masked region
-            bad_T_idx, bad_K_idx = np.where(bad)
-            print(f"  masked strikes span K=[{K_grid[bad_K_idx].min():.0f}, "
-                  f"{K_grid[bad_K_idx].max():.0f}], "
-                  f"maturities T=[{T_grid[bad_T_idx].min():.2f}, "
-                  f"{T_grid[bad_T_idx].max():.2f}]")
-        n_valid = n_total - n_nan
-        print(f"  valid points: {n_valid} ({100*n_valid/n_total:.1f}%)")
+            print(f"  additional NaN (negative variance): {n_negvar}")
+        print(f"  valid points: {n_total - n_nan} ({100*(n_total-n_nan)/n_total:.1f}%)")
     
     return sigma_loc
