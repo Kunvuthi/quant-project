@@ -1,4 +1,3 @@
-import sys
 import numpy as np
 from scipy.stats import norm
 from models.montecarlo import simulate_gbm_paths   # the primitive stays put
@@ -22,7 +21,7 @@ def geometric_asian_price(
     sigma_hat = sigma * np.sqrt((n+1)*(2*n+1) / (6*n**2) )
 
     # --- average monitoring time ---
-    t_bar = t_bar = T*(n+1) / (2*n)
+    t_bar = T*(n+1) / (2*n)
 
     # --- effective carry b_hat so the effective log-mean matches ---
     # b_hat = [ (r - 0.5 sigma^2) t_bar + 0.5 sigma_hat^2 T ] / T
@@ -36,7 +35,16 @@ def geometric_asian_price(
     
     return price
 
-def arithmetic_asian_price_cv(S, K, T, r, sigma, n_steps, n_paths=100_000, seed=None):
+def arithmetic_asian_price_cv(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+    n_steps: int,
+    n_paths: int = 100_000,
+    seed: int | None = None,
+) -> dict:
     paths = simulate_gbm_paths(S, T, r, sigma, n_steps, n_paths=n_paths, seed=seed)
     disc = np.exp(-r * T)
 

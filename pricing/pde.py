@@ -1,8 +1,16 @@
 import numpy as np
 from scipy.sparse import diags
 from scipy.sparse.linalg import spsolve
+from collections.abc import Callable
 
-def setup_grid(S0, T, sigma_max, n_S=200, n_t=200, n_std=5):
+def setup_grid(
+    S0: float,
+    T: float,
+    sigma_max: float,
+    n_S: int = 200,
+    n_t: int = 200,
+    n_std: int = 5,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
     """
     Log-space grid for the local-vol PDE.
     x = ln(S); uniform in x => geometric in S.
@@ -20,7 +28,12 @@ def setup_grid(S0, T, sigma_max, n_S=200, n_t=200, n_std=5):
     
     return x_grid, S_grid, t_grid, dx, dt
 
-def build_operator_diagonals(sigma_nodes, dx, r, q):
+def build_operator_diagonals(
+    sigma_nodes: np.ndarray,
+    dx: float,
+    r: float,
+    q: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Tridiagonal diagonals of the log-space spatial operator L at one time level.
 
@@ -44,7 +57,14 @@ def build_operator_diagonals(sigma_nodes, dx, r, q):
     upper = diffusion + drift      # coefficient on u_{i+1}
     return lower, diag, upper
 
-def cn_step(u_next, sigma_nodes, dx, dt, r, q):
+def cn_step(
+    u_next: np.ndarray,
+    sigma_nodes: np.ndarray,
+    dx: float,
+    dt: float,
+    r: float,
+    q: float,
+) -> np.ndarray:
     """
     One backward Crank-Nicolson step: u^{n+1} -> u^n (interior nodes).
     Boundary conditions are applied by the caller, not here.
@@ -82,8 +102,18 @@ def cn_step(u_next, sigma_nodes, dx, dt, r, q):
     u_now = spsolve(A, rhs)          # tridiagonal solve
     return u_now
 
-def price_call_localvol(K, S0, T, r, q, local_vol_fn, sigma_max,
-                        n_S=200, n_t=200, n_std=5):
+def price_call_localvol(
+    K: float,
+    S0: float,
+    T: float,
+    r: float,
+    q: float,
+    local_vol_fn: Callable[[np.ndarray, float], np.ndarray],
+    sigma_max: float,
+    n_S: int = 200,
+    n_t: int = 200,
+    n_std: int = 5,
+) -> float:
     """
     Price a European call under a local-vol surface via Crank-Nicolson.
 
@@ -111,10 +141,3 @@ def price_call_localvol(K, S0, T, r, q, local_vol_fn, sigma_max,
 
     # --- interpolate the price at S0 ---
     return np.interp(S0, S_grid, u)
-
-const_vol = lambda S, t: 0.2 * np.ones_like(S)
-pde_price = price_call_localvol(K=100, S0=100, T=1.0, r=0.05, q=0.0,
-                                local_vol_fn=const_vol, sigma_max=0.2)
-from models.bsm import bsm_price
-bsm = bsm_price(100, 100, 1.0, 0.05, 0.20, 'call')
-print(f"PDE {pde_price:.4f}  vs  BSM {bsm:.4f}  (diff {abs(pde_price-bsm):.2e})")
