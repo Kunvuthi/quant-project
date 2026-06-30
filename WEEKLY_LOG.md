@@ -339,7 +339,55 @@ A running record of work completed each day as documentation.
 - **Stale-notebook-state caution**: hit a K_grid/sigma_recovered size mismatch from
   re-running cells out of order; resolved by kernel restart. Argues for the pytest
   coverage (clean execution every run) queued for tomorrow.
-  
+
+### Day 14 - Tue Jun 30
+- **PDE put mode**: `price_call_localvol` -> `price_localvol` with
+  `option_type: Literal['call','put']='call'`. Payoff AND boundaries flip as a matched
+  pair (put: low-S boundary $Ke^{-r\tau}-Se^{-q\tau}$, high-S -> 0); `cn_step`,
+  `setup_grid`, `build_operator_diagonals` untouched (operator is payoff-agnostic).
+  Caught a self-review bug: dropped the `cn_step` call in the loop (would return intrinsic,
+  not price). Validated: PUT PDE 5.5759 vs BSM 5.5735, diff 2.4e-3 (same as call - shared
+  discretization). Call sites updated (`test_pde.py`, `07_dupire.ipynb`).
+- **PDE put-call-parity test**: $C-P = Se^{-qT}-Ke^{-rT}$, atol 5e-3. Observed parity
+  holds at 2.4e-3 - errors do NOT cancel (call/put share same-sign discretization error),
+  contra my guess they'd subtract out. **18 tests passing.**
+- **`test_dupire.py` (extractor went 0 -> 3 tests)**:
+  - `recovers_constant_vol`: flat 0.20 interior, nanmean atol 1e-3, nanstd < 5e-3
+  - `masks_thin_density`: wide grid -> NaNs appear, ATM survives
+  - `no_sawtooth`: regression guard for the nested-`np.gradient` bug. Metric = max abs
+    *second difference* along strike axis (sawtooth -> large alternating 2nd diff; smooth
+    -> ~0). Clean surface 1.66e-4 vs threshold 1e-3 (~6x margin); sawtooth amplitude ~0.04
+    would give 2nd diff ~240x threshold. **Magnitude (2nd diff) separates sawtooth from
+    noise; sign-change *count* would not (noise alternates too).**
+- **Asian put**: `geometric_asian_price` gains `option_type`; same $\hat\sigma,\hat b,
+  \hat d_{1,2}$, only final assembly flips ($K\Phi(-\hat d_2)-Se^{\hat bT}\Phi(-\hat d_1)$).
+  Geometric-Asian parity check: C-P vs $e^{-rT}(Se^{\hat bT}-K)$, diff 6.66e-15 (machine
+  precision - closed form, no discretization). `arithmetic_asian_price_cv` threads
+  `option_type` to all three (target payoff, control payoff, `mu_X` call); CV machinery
+  payoff-agnostic. [verified put X-Y corr stays ~0.9996]
+- **Type hints**: `price_localvol`, `arithmetic_asian_price_cv` annotated. Sweep complete.
+- **Dupire stays call-only** (no `option_type`): it's a *calibrator*, not a pricer -
+  Dupire's formula is defined on the call surface (Breeden-Litzenberger). Puts -> convert
+  to calls via parity *upstream* in the data pipeline, not in the extractor.
+
+### PARKED data pipeline - progress (Day 14)
+- **Decision: drop yfinance entirely** for the options chain; use live CBOE JSON
+  (`cdn.cboe.com/.../delayed_quotes/options/_SPX.json`, 15-min delayed, free).
+  yfinance fought us at every turn (rate limits, bad spot, stale cache total-wipeout).
+- **CBOE fetcher already worked** - re-pointed to `requests.get` + `User-Agent` header
+  (more robust than `pd.read_json`); deleted `fetch_chain_yf` / `fetch_chain_cached_yf`
+  and the yfinance `CLEAN_DEFAULTS` entry.
+- **Live fetch confirmed working**: returned 30,468 rows x 27 cols, spot 7440.43
+  (sane - vs the stale cached 7554 junk). Fresh chain flows.
+- **Architecture locked** (forced by CBOE's licensing boundary):
+  - CBOE free feed does NOT carry a licensed index spot (CGIF license = $1000/mo) -
+    so `current_price` is structurally untrustworthy for SPX, not a fixable bug.
+  - **Smile / Dupire / IV** -> CBOE chain + **parity forward** (self-contained, no
+    underlying fetch needed; parity forward IS the spot source). Day-11 work vindicated.
+  - **GARCH / realised vol** -> Stooq daily CSV (separate pipeline; manual if `^spx`
+    programmatic access still blocked - the `/q/d/l/?s=^spx&i=d` CSV form, untested).
+  - `current_price` kept only as a flagged diagnostic, never trusted.
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
