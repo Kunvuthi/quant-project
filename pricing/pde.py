@@ -2,6 +2,7 @@ import numpy as np
 from scipy.sparse import diags
 from scipy.sparse.linalg import spsolve
 from collections.abc import Callable
+from typing import Literal
 
 def setup_grid(
     S0: float,
@@ -102,7 +103,7 @@ def cn_step(
     u_now = spsolve(A, rhs)          # tridiagonal solve
     return u_now
 
-def price_call_localvol(
+def price_localvol(
     K: float,
     S0: float,
     T: float,
@@ -113,31 +114,42 @@ def price_call_localvol(
     n_S: int = 200,
     n_t: int = 200,
     n_std: int = 5,
+    option_type: Literal['call', 'put'] = 'call',
 ) -> float:
     """
-    Price a European call under a local-vol surface via Crank-Nicolson.
+    Price a European option under a local-vol surface via Crank-Nicolson.
 
     local_vol_fn : callable
         local_vol_fn(S_array, t) -> sigma at each spot for time t.
         (Constant vol: lambda S, t: 0.2 * np.ones_like(S).)
     Returns the price interpolated at S0.
     """
+    if option_type not in ('call', 'put'):
+        raise ValueError("option_type must be 'call' or 'put'")
+    
     x_grid, S_grid, t_grid, dx, dt = setup_grid(S0, T, sigma_max, n_S, n_t, n_std)
 
     # --- terminal condition: payoff at t = T ---
-    u = np.maximum(S_grid - K, 0.0)           # V(S, T) = (S-K)+
+    if option_type == 'call':
+        u = np.maximum(S_grid - K, 0.0)           # V(S, T) = (S-K)+
+    else:
+        u = np.maximum(K - S_grid, 0.0)
 
     # --- march backward: from t_grid[-1] down to t_grid[0] ---
     for n in range(n_t, 0, -1):               # step from level n to n-1
         t_now = t_grid[n - 1]                  # the time we're solving FOR
         sigma_nodes = local_vol_fn(S_grid, t_now)
-
+        
         u = cn_step(u, sigma_nodes, dx, dt, r, q)
 
-        # --- overwrite boundaries (interior stencil is invalid at edges) ---
-        tau = T - t_now                        # time remaining to expiry
-        u[0]  = 0.0                            # deep OTM: call worthless
-        u[-1] = S_grid[-1] * np.exp(-q * tau) - K * np.exp(-r * tau)  # deep ITM
+        tau = T - t_now
+        # --- boundaries: payoff and boundaries are a MATCHED PAIR ---
+        if option_type == 'call':
+            u[0]  = 0.0
+            u[-1] = S_grid[-1]*np.exp(-q*tau) - K*np.exp(-r*tau)
+        else:
+            u[0]  = K*np.exp(-r*tau) - S_grid[0]*np.exp(-q*tau)
+            u[-1] = 0.0
 
     # --- interpolate the price at S0 ---
     return np.interp(S0, S_grid, u)
