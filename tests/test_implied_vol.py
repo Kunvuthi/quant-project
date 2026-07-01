@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from models.implied_vol import bsm_implied_vol
+from calibration.implied_vol import bsm_implied_vol
 from models.bsm import bsm_price
 
 

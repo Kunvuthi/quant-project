@@ -1,6 +1,5 @@
 import pandas as pd
 from datetime import datetime
-from pathlib import Path
 import numpy as np
 from typing import Literal
 import requests
