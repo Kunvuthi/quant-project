@@ -250,13 +250,171 @@ A running record of work completed each day as documentation.
   Known cache limitation: `period`-keyed price cache goes stale as history grows -
   date-stamped key or freshness check needed for Phase 3.
 
-  
+## Week 3 (Jun 25 - Jul 1): Dupire Local Volatility
+
+### Day 11 - Thu Jun 25
+- Branch `feature/week-03-dupire` off `main`.
+- **Closed the carry-in-IV loop** (deferred W2 item): threaded cost-of-carry $b$ through
+  `bsm_implied_vol` and `compute_smile` so IV inverts against the true forward
+  $F = Se^{(b-r)T}$, not the no-dividend $Se^{rT}$.
+  - **Fixed arbitrage bounds for carry**: strike discounts at $r$, spot/forward grows at
+    $b$. Call $\in [\max(Se^{(b-r)T} - Ke^{-rT}, 0),\ Se^{(b-r)T}]$; put upper bound
+    $Ke^{-rT}$. Reduces exactly to the W1 no-dividend bounds when $b=r$.
+- **First tests for the IV inverter** (`tests/test_implied_vol.py`, 5 tests): round-trip
+  call/put, round-trip with carry ($b \ne r$ - guards today's change), OTM strikes,
+  arbitrage-violation -> NaN. **14 tests passing** total.
+- **Parity-implied forward** (`implied_forward_from_parity` in `option_chain.py`):
+  $F = K + e^{rT}(C - P)$ across common strikes, median for robustness. The
+  market-implied (option-3) approach - no external dividend input.
+  - **Caught a bad data point**: CBOE `current_price` field (7554) was stale/wrong;
+    actual SPX ~7410 (verified). Parity forward (7443.7) agreed across all 19 strikes to
+    4 sig figs - **the parity forward is more trustworthy than the reported spot**. This
+    is why desks use parity forwards. Real data-hygiene lesson.
+- **Dupire setup + intuition** documented in `07_dupire.ipynb`:
+  - Local vol = BSM with constant $\sigma$ promoted to a function $\sigma_{\text{loc}}(S,t)$.
+    Still one-factor, arbitrage-free, complete - but NOT lognormal, NOT closed-form.
+    BSM is the special case $\sigma_{\text{loc}} = $ const. Non-lognormality is the point
+    (it is what fits the smile).
+  - Derivation roadmap: **Fokker-Planck** (forward Kolmogorov - differentiates terminal
+    $(K,T)$, the surface axes; vs backward, which prices one option) -> **Breeden-
+    Litzenberger** ($\partial^2 C/\partial K^2 = e^{-rT}p$, density from prices) ->
+    substitute + solve for $\sigma_{\text{loc}}^2$.
+  - **Structural reading of Dupire's formula**: $\sigma^2$ lives only in the FP diffusion
+    term, so isolating it = dividing by the density term -> density ($\partial^2 C/\partial K^2$)
+    lands in the **denominator**. Practical curse: density -> 0 in the wings, so
+    $\sigma_{\text{loc}}$ blows up there. Exact in theory, minefield in practice - needs a
+    smooth arbitrage-free surface BEFORE differentiating.
+- **PARKED** (data pipeline issues, rebuild when able):
+  - CBOE `current_price` unreliable (use parity forward instead)
+  - yfinance fetch broken at notebook top
+  - full clean smile re-extraction
+  - idea: parity-forward sanity guard (warn if |implied q| > 5%) in `implied_forward_from_parity`
+
+### Day 12 - Fri Jun 26
+- New packages `pricing/` and `calibration/` (added to `pyproject.toml`, reinstalled).
+- **`calibration/dupire.py`** - `dupire_local_vol`: extracts $\sigma_{\text{loc}}(K,T)$
+  from a call-price grid via FD derivatives + Dupire's formula. Density-floor mask
+  (NaN where $\partial^2C/\partial K^2$ too small) + verbose masking report.
+  - **Case (a) - constant-vol validation**: Dupire on BSM prices returns flat 0.20,
+    interior mean 0.2000 std 0.0005. Wings blow up (worst K=120/T=0.1 -> 0.34) **on
+    clean noiseless data** - the denominator curse, exactly as derived.
+- **`pricing/pde.py`** - Crank-Nicolson local-vol PDE pricer (log-space grid,
+  tridiagonal operator with node-dependent vol, asymptotic boundaries, backward march).
+  - `setup_grid` (log-uniform in $x=\ln S$, uniform in $t$), `build_operator_diagonals`
+    (the FD stencil coefficients), `cn_step` (sparse tridiagonal solve via
+    `scipy.sparse`), `price_call_localvol` (assembles + marches + interpolates at $S_0$).
+  - **Checkpoint 1**: reproduces `bsm_price` to second order - error quarters per grid
+    doubling (ratios 4.11, 4.13, 4.63). Confirms $O(\Delta x^2, \Delta t^2)$.
+- **Case (b) - Dupire round-trip** (the week's main result): price under known linear
+  skew ($\beta=-0.5$) -> extract -> recover. Mean error 0.008 over surface 0.186-0.216;
+  error concentrated only in high-$K$/long-$T$ corner (density thinning). Extractor
+  recovers genuine curvature where density supports it.
+- **Two bugs caught**:
+  1. nested `np.gradient` for $\partial^2C/\partial K^2$ -> sawtooth (even/odd node
+     decoupling); fixed with direct stencil $(C_{i+1}-2C_i+C_{i-1})/\Delta K^2$
+  2. $\beta=-0.1$ test surface too flat to test anything; needed $\beta=-0.5$
+- **TODO (real-data refinements)**: density floor too lax for mild corner instability
+  (curvature-aware mask needed); non-uniform-strike second difference for real chains;
+  forward-PDE pricer would give whole strike rows per solve (vs 837 backward solves here).
+- Notebook: full setup/intuition + implementation + lessons in `07_dupire.ipynb`.
+
+### Day 13 - Mon Jun 29
+- **Curvature-aware mask** added to `dupire_local_vol`: per-maturity *relative* density
+  floor (mask where $\partial^2_K C < \epsilon \cdot \max_K \partial^2_K C$ for that row,
+  $\epsilon=0.01$) OR'd with the absolute floor. Per-maturity peak (`keepdims=True`
+  broadcast) is fairer than global - density magnitude falls with maturity, so each row
+  judged on its own peak. Verbose report now separates absolute vs relative masking.
+- **Case-(b) round-trip properly validated** after a four-hypothesis debugging chase
+  (detail in `07_dupire.ipynb` lessons). Root cause: coarse PDE grid (n=100) prices,
+  differentiated by $\partial_T$, produced a long-T noise band - NOT density, NOT edges,
+  NOT bad prices. Density at the "worst" point was 88% of peak; the error map showed a
+  T-band, not a corner. **Fix: re-price at n=200.** Max report error 0.88 -> 0.026,
+  mean 0.054 -> 0.003. Clean recovery of the $\beta=-0.5$ linear skew.
+- **Key principles banked**: (1) FD amplifies the input's noise floor - extraction is far
+  more price-noise-sensitive than direct price comparison; a grid fine enough to *price*
+  can be too coarse to *differentiate*. (2) Visualize the whole error field early - its
+  spatial structure IS the diagnosis.
+- **Type hints**: `pricing/pde.py` annotated to house style (`Callable[[np.ndarray, float],
+  np.ndarray]` for the local-vol fn, full tuple return types).
+- **Stale-notebook-state caution**: hit a K_grid/sigma_recovered size mismatch from
+  re-running cells out of order; resolved by kernel restart. Argues for the pytest
+  coverage (clean execution every run) queued for tomorrow.
+
+### Day 14 - Tue Jun 30
+- **PDE put mode**: `price_call_localvol` -> `price_localvol` with
+  `option_type: Literal['call','put']='call'`. Payoff AND boundaries flip as a matched
+  pair (put: low-S boundary $Ke^{-r\tau}-Se^{-q\tau}$, high-S -> 0); `cn_step`,
+  `setup_grid`, `build_operator_diagonals` untouched (operator is payoff-agnostic).
+  Caught a self-review bug: dropped the `cn_step` call in the loop (would return intrinsic,
+  not price). Validated: PUT PDE 5.5759 vs BSM 5.5735, diff 2.4e-3 (same as call - shared
+  discretization). Call sites updated (`test_pde.py`, `07_dupire.ipynb`).
+- **PDE put-call-parity test**: $C-P = Se^{-qT}-Ke^{-rT}$, atol 5e-3. Observed parity
+  holds at 2.4e-3 - errors do NOT cancel (call/put share same-sign discretization error),
+  contra my guess they'd subtract out. **18 tests passing.**
+- **`test_dupire.py` (extractor went 0 -> 3 tests)**:
+  - `recovers_constant_vol`: flat 0.20 interior, nanmean atol 1e-3, nanstd < 5e-3
+  - `masks_thin_density`: wide grid -> NaNs appear, ATM survives
+  - `no_sawtooth`: regression guard for the nested-`np.gradient` bug. Metric = max abs
+    *second difference* along strike axis (sawtooth -> large alternating 2nd diff; smooth
+    -> ~0). Clean surface 1.66e-4 vs threshold 1e-3 (~6x margin); sawtooth amplitude ~0.04
+    would give 2nd diff ~240x threshold. **Magnitude (2nd diff) separates sawtooth from
+    noise; sign-change *count* would not (noise alternates too).**
+- **Asian put**: `geometric_asian_price` gains `option_type`; same $\hat\sigma,\hat b,
+  \hat d_{1,2}$, only final assembly flips ($K\Phi(-\hat d_2)-Se^{\hat bT}\Phi(-\hat d_1)$).
+  Geometric-Asian parity check: C-P vs $e^{-rT}(Se^{\hat bT}-K)$, diff 6.66e-15 (machine
+  precision - closed form, no discretization). `arithmetic_asian_price_cv` threads
+  `option_type` to all three (target payoff, control payoff, `mu_X` call); CV machinery
+  payoff-agnostic. [verified put X-Y corr stays ~0.9996]
+- **Type hints**: `price_localvol`, `arithmetic_asian_price_cv` annotated. Sweep complete.
+- **Dupire stays call-only** (no `option_type`): it's a *calibrator*, not a pricer -
+  Dupire's formula is defined on the call surface (Breeden-Litzenberger). Puts -> convert
+  to calls via parity *upstream* in the data pipeline, not in the extractor.
+
+### Day 15 - Wed Jul 1
+- **Option chain finished end-to-end on live CBOE data**: parser locked via assert on
+  known OCC symbol (SPXW260618C00200000). Live path fetch -> SPXW filter -> clean ->
+  parity forward, all working. Expiry 2026-07-31 (30 DTE), cleaned to 105 calls / 196
+  puts. Parity forward 7500.64, std 0.53 over 38 strikes (0.007%), near-perfect parity
+  consistency. current_price 7499.36 fresh this time and agrees (cross-validation bonus).
+- **Implied q diagnostic reads 3.85%** (high vs SPX's true ~1.3%). NOT a bug: q = r - b
+  inherits the untrusted spot and assumed r; over short T small spot errors annualize into
+  large q errors. The forward and carry b (what we actually use) are correct; q is a
+  flagged sanity check only, not used downstream.
+- **Notebook 03_option_vol_smile.ipynb rebuilt**: was an archaeological dig (Week 1 title,
+  broken early smile with hardcoded 7554.29 spot, two fetches, two smile methods one
+  wrong). Now 18 clean cells, future-proof (nothing hardcoded, all dates/spots derived at
+  run time), reads as a data-workflow explainer. Two helpers (forward_for_expiry,
+  smile_for_expiry) so the two-maturity logic isn't copy-pasted. Fixed the cell-14 bug
+  (75 DTE used unfiltered all_options, reintroducing duplicate strikes).
+- **Folder reorg**: option_chain.py moved models/ -> new data/ package (it is data
+  infrastructure, not a pricing model). Created data/__init__.py, registered data in
+  pyproject.toml, pip install -e ., fixed notebook imports, verified + pytest green.
+  Cache-path logic (Path(__file__).parent.parent) survives the move unchanged (data/ is
+  same depth as models/ was); stale comment updated.
+  W3. Dupire validated on synthetic ground truth only; real-data smoothing deferred to
+  where Heston lives longest (W4-W6) and calibration needs a clean target surface.
+- **Week 3 branch closed**: PR merged to main, tagged v0.3-week3.
+- Note: SVI smile smoothing (flagged W1 for W3) intentionally carried to W6, not done in
+  W3. Dupire validated on synthetic ground truth only; real-data smoothing deferred to
+  where Heston lives longest (W4-W6) and calibration needs a clean target surface.
+
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
   functional, cosmetic only
 - All Day 1–5 work pushed to `feature/week-01-bsm` branch on GitHub
 - All Day 6–10 work pushed to `feature/week-02-bsm` branch on GitHub
+- All Day 11–15 work pushed to `feature/week-03-dupire` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
-- SPX dividend yield (~1.3%) not modelled - affects forward, hence IV inversion
-- Smile wing noise from bid-ask spreads - SVI smoothing planned for Week 3
+- SVI smile smoothing: flagged for W3 but deliberately NOT done. Rationale: Dupire got
+  one week and was validated on synthetic ground truth (clean surfaces) - that taught the
+  mechanism and motivation, which is the high-value learning. SVI is real-data plumbing,
+  not modelling, so it was deferred to W6 (Heston + SABR calibration), where Heston lives
+  longest (recurs W4-W6) and calibration genuinely NEEDS a clean arbitrage-free target
+  surface. Effort compounds there rather than being spent on Dupire's single week.
+- **Phase 3 note**: adopt QuantLib (conda-forge `quantlib`) as the production pricing
+  reference - cross-validate own pricers against it, and lean on it for the pricing layer
+  in backtesting so own code focuses on portfolio/strategy logic. Build-to-learn now,
+  library-in-production later. (Large C++ dependency - add deliberately when needed, not
+  before.)

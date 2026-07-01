@@ -1,17 +1,10 @@
-import yfinance as yf
 import pandas as pd
 from datetime import datetime
-from pathlib import Path
 import numpy as np
 from typing import Literal
+import requests
 
 CLEAN_DEFAULTS = {
-    "yfinance": {
-        "min_volume": 5,
-        "min_open_interest": 0,        # SPX index OI is always 0 via yfinance
-        "max_relative_spread": 0.5,
-        "max_staleness_days": 7,
-    },
     "cboe": {
         "min_volume": 5,
         "min_open_interest": 10,       # CBOE has real OI; tighter
@@ -41,78 +34,25 @@ def _parse_occ_symbol(symbol: str) -> dict:
         'strike': strike_int / 1000.0,
     }
 
-def fetch_chain_yf(ticker: str, expiry: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Fetch option chain for a given ticker and expiry.
-    
-    Parameters
-    ----------
-    ticker : str
-        Yahoo ticker symbol (e.g. '^SPX').
-    expiry : str
-        Expiry date in 'YYYY-MM-DD' format. Must be in ticker.options.
-    
-    Returns
-    -------
-    (calls, puts) : tuple of DataFrames
-        Raw option chain as returned by yfinance, no cleaning applied.
-    """
-    tk = yf.Ticker(ticker)
-    chain = tk.option_chain(expiry)
-    return chain.calls, chain.puts
-
-def fetch_chain_cached_yf(
-    ticker: str, 
-    expiry: str, 
-    cache_dir: str | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Fetch with file-based caching. Re-fetches only if file doesn't exist."""
-    if cache_dir is None:
-        # Default to <repo_root>/data/raw, independent of caller's CWD
-        repo_root = Path(__file__).parent.parent  # spx_chain.py -> models/ -> repo
-        cache_dir = repo_root / 'data' / 'raw'
-    else:
-        cache_dir = Path(cache_dir)
-    
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    calls_path = cache_dir / f"{ticker.lstrip('^')}_{expiry}_calls.csv"
-    puts_path  = cache_dir / f"{ticker.lstrip('^')}_{expiry}_puts.csv"
-    
-    if calls_path.exists() and puts_path.exists():
-        print(f"Loading from cache: {cache_dir}")
-        return pd.read_csv(calls_path), pd.read_csv(puts_path)
-    
-    print("Fetching live...")
-    calls, puts = fetch_chain_yf(ticker, expiry)
-    calls.to_csv(calls_path, index=False)
-    puts.to_csv(puts_path, index=False)
-    return calls, puts
-
 def fetch_chain_cboe(ticker: str = '^SPX') -> tuple[pd.DataFrame, float]:
     """
-    Fetch full option chain from CBOE.
-    
-    Returns
-    -------
-    (chain, spot) : tuple
-        chain : DataFrame of all listed contracts (every expiry, calls + puts)
-        spot  : current underlying price at fetch time
+    Fetch full option chain from CBOE delayed-quote JSON.
+    NOTE: the returned spot is CBOE's `current_price`, which is UNRELIABLE for
+    index options (no CGIF license on the free feed). Use implied_forward_from_parity
+    as the canonical forward; treat this spot as a flagged diagnostic only.
     """
     cboe_ticker = ticker.lstrip('^')
     url = f"https://cdn.cboe.com/api/global/delayed_quotes/options/_{cboe_ticker}.json"
-    
-    response = pd.read_json(url)
-    spot = float(response.loc['current_price', 'data'])   # ← extract spot
-    options_data = response.loc['options', 'data']
-    
-    df = pd.DataFrame(options_data)
+    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()["data"]
+
+    spot = float(data["current_price"])          # untrusted, see docstring
+    df = pd.DataFrame(data["options"])
     parsed = df['option'].apply(_parse_occ_symbol).apply(pd.Series)
     df = pd.concat([df, parsed], axis=1)
-    df = df.rename(columns={
-        'open_interest': 'openInterest',
-        'last_trade_time': 'lastTradeDate',
-    })
-    
+    df = df.rename(columns={'open_interest': 'openInterest',
+                            'last_trade_time': 'lastTradeDate'})
     return df, spot
 
 def filter_by_expiry(
@@ -214,7 +154,56 @@ def find_closest_expiry(
     actual_days = (closest - today).days
     return closest.strftime('%Y-%m-%d'), actual_days
 
+def implied_vol_with_forward(price, S, K, T, r, F, option_type, bsm_implied_vol):
+    """
+    Invert implied vol using a parity-implied forward F instead of assuming F = S e^{rT}.
+    The carry b is set so the pricer's forward matches F: F = S e^{bT} => b = ln(F/S)/T.
+    """
+    b = np.log(F / S) / T
+    # bsm_implied_vol must accept and pass through b to bsm_price(..., b=b)
+    return bsm_implied_vol(price, S, K, T, r, option_type, b=b)
 
+def implied_forward_from_parity(calls, puts, r, T):
+    """
+    Extract the forward F from put-call parity across common strikes.
+    F = K + e^{rT} (C - P), averaged over strikes (robust to per-strike noise).
+
+    Parameters
+    ----------
+    calls, puts : DataFrame
+        Cleaned chains for ONE expiry, each with 'strike' and 'mid' columns.
+    r : float
+        Risk-free rate (continuously compounded).
+    T : float
+        Time to expiry in years.
+
+    Returns
+    -------
+    F : float
+        Implied forward price.
+    q : float
+        Implied continuous dividend yield, backed out via F = S e^{(r-q)T}.
+        (Returned as None here; computed by the caller who knows spot.)
+    """
+    # align calls and puts on common strikes
+    merged = pd.merge(
+        calls[['strike', 'mid']].rename(columns={'mid': 'call_mid'}),
+        puts[['strike', 'mid']].rename(columns={'mid': 'put_mid'}),
+        on='strike',
+    )
+
+    # per-strike forward estimate from parity
+    merged['F_est'] = merged['strike'] + np.exp(r * T) * (
+        merged['call_mid'] - merged['put_mid']
+    )
+
+    # robust central estimate: the parity forward is most reliable near ATM,
+    # where |C - P| is large vs the spread. Use the strikes closest to where
+    # C - P changes sign (the ATM-forward cross), or just take the median as
+    # a noise-robust summary.
+    F = merged['F_est'].median()
+
+    return F, merged
         
     
     
