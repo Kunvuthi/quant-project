@@ -370,23 +370,34 @@ A running record of work completed each day as documentation.
   Dupire's formula is defined on the call surface (Breeden-Litzenberger). Puts -> convert
   to calls via parity *upstream* in the data pipeline, not in the extractor.
 
-### PARKED data pipeline - progress (Day 14)
-- **Decision: drop yfinance entirely** for the options chain; use live CBOE JSON
-  (`cdn.cboe.com/.../delayed_quotes/options/_SPX.json`, 15-min delayed, free).
-  yfinance fought us at every turn (rate limits, bad spot, stale cache total-wipeout).
-- **CBOE fetcher already worked** - re-pointed to `requests.get` + `User-Agent` header
-  (more robust than `pd.read_json`); deleted `fetch_chain_yf` / `fetch_chain_cached_yf`
-  and the yfinance `CLEAN_DEFAULTS` entry.
-- **Live fetch confirmed working**: returned 30,468 rows x 27 cols, spot 7440.43
-  (sane - vs the stale cached 7554 junk). Fresh chain flows.
-- **Architecture locked** (forced by CBOE's licensing boundary):
-  - CBOE free feed does NOT carry a licensed index spot (CGIF license = $1000/mo) -
-    so `current_price` is structurally untrustworthy for SPX, not a fixable bug.
-  - **Smile / Dupire / IV** -> CBOE chain + **parity forward** (self-contained, no
-    underlying fetch needed; parity forward IS the spot source). Day-11 work vindicated.
-  - **GARCH / realised vol** -> Stooq daily CSV (separate pipeline; manual if `^spx`
-    programmatic access still blocked - the `/q/d/l/?s=^spx&i=d` CSV form, untested).
-  - `current_price` kept only as a flagged diagnostic, never trusted.
+### Day 15 - Wed Jul 1
+- **Option chain finished end-to-end on live CBOE data**: parser locked via assert on
+  known OCC symbol (SPXW260618C00200000). Live path fetch -> SPXW filter -> clean ->
+  parity forward, all working. Expiry 2026-07-31 (30 DTE), cleaned to 105 calls / 196
+  puts. Parity forward 7500.64, std 0.53 over 38 strikes (0.007%), near-perfect parity
+  consistency. current_price 7499.36 fresh this time and agrees (cross-validation bonus).
+- **Implied q diagnostic reads 3.85%** (high vs SPX's true ~1.3%). NOT a bug: q = r - b
+  inherits the untrusted spot and assumed r; over short T small spot errors annualize into
+  large q errors. The forward and carry b (what we actually use) are correct; q is a
+  flagged sanity check only, not used downstream.
+- **Notebook 03_option_vol_smile.ipynb rebuilt**: was an archaeological dig (Week 1 title,
+  broken early smile with hardcoded 7554.29 spot, two fetches, two smile methods one
+  wrong). Now 18 clean cells, future-proof (nothing hardcoded, all dates/spots derived at
+  run time), reads as a data-workflow explainer. Two helpers (forward_for_expiry,
+  smile_for_expiry) so the two-maturity logic isn't copy-pasted. Fixed the cell-14 bug
+  (75 DTE used unfiltered all_options, reintroducing duplicate strikes).
+- **Folder reorg**: option_chain.py moved models/ -> new data/ package (it is data
+  infrastructure, not a pricing model). Created data/__init__.py, registered data in
+  pyproject.toml, pip install -e ., fixed notebook imports, verified + pytest green.
+  Cache-path logic (Path(__file__).parent.parent) survives the move unchanged (data/ is
+  same depth as models/ was); stale comment updated.
+  W3. Dupire validated on synthetic ground truth only; real-data smoothing deferred to
+  where Heston lives longest (W4-W6) and calibration needs a clean target surface.
+- **Week 3 branch closed**: PR merged to main, tagged v0.3-week3.
+- Note: SVI smile smoothing (flagged W1 for W3) intentionally carried to W6, not done in
+  W3. Dupire validated on synthetic ground truth only; real-data smoothing deferred to
+  where Heston lives longest (W4-W6) and calibration needs a clean target surface.
+
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
@@ -396,7 +407,12 @@ A running record of work completed each day as documentation.
 - All Day 6–10 work pushed to `feature/week-02-bsm` branch on GitHub
 - All Day 11–15 work pushed to `feature/week-03-dupire` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
-- Smile wing noise from bid-ask spreads - SVI smoothing planned for Week 3
+- SVI smile smoothing: flagged for W3 but deliberately NOT done. Rationale: Dupire got
+  one week and was validated on synthetic ground truth (clean surfaces) - that taught the
+  mechanism and motivation, which is the high-value learning. SVI is real-data plumbing,
+  not modelling, so it was deferred to W6 (Heston + SABR calibration), where Heston lives
+  longest (recurs W4-W6) and calibration genuinely NEEDS a clean arbitrage-free target
+  surface. Effort compounds there rather than being spent on Dupire's single week.
 - **Phase 3 note**: adopt QuantLib (conda-forge `quantlib`) as the production pricing
   reference - cross-validate own pricers against it, and lean on it for the pricing layer
   in backtesting so own code focuses on portfolio/strategy logic. Build-to-learn now,
