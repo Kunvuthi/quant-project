@@ -398,6 +398,28 @@ A running record of work completed each day as documentation.
   W3. Dupire validated on synthetic ground truth only; real-data smoothing deferred to
   where Heston lives longest (W4-W6) and calibration needs a clean target surface.
 
+## Week 4 (Jul 2 - Jul 8): Dupire Local Volatility
+
+### Day 16 - Thu Jul 2
+- Branch `feature/week-04-heston` created off `main` (v0.3-week3)
+- **Conceptual groundwork only, no code yet** - Heston SDE system, Feller condition, and the
+  CIR-to-noncentral-chi-squared link (thread closed from Day 7/Day 10) worked through from
+  first principles before touching simulation code
+- Established why $(S_t, v_t)$ jointly Markovian but $S_t$ alone is not - Feynman-Kac gives a
+  3D PDE $(t,S,v)$ here vs Dupire's 2D $(t,S)$, motivates going straight to characteristic-
+  function pricing in W5 rather than a direct PDE solve
+- Traced Euler discretization failure mode for CIR: unbounded Gaussian shock evaluated at
+  interval start can drive $v$ negative for any $\Delta t > 0$; Feller condition reduces
+  frequency but does not eliminate the failure mode structurally
+- Compared exact CIR sampling (noncentral chi-squared via Poisson-mixture) vs Euler on cost,
+  and separately identified why exact *joint* $(S,v)$ simulation (Broadie-Kaya) needs the
+  integrated variance $\int_t^{t+\Delta t} v_s\,ds$ conditional on both endpoints, not just the
+  endpoints themselves - no closed form, inverted numerically from Laplace transform
+- Notebook `07_heston.ipynb` started: intro (motivation, SDE system, CIR/chi-squared thread
+  payoff, week plan) and lessons-learned section written up
+- **Decision**: implement Andersen QE tomorrow (Day 17) rather than full Broadie-Kaya - better
+  bias/speed tradeoff than truncated Euler, avoids Broadie-Kaya's numerical Laplace inversion
+  cost
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
@@ -406,6 +428,7 @@ A running record of work completed each day as documentation.
 - All Day 1–5 work pushed to `feature/week-01-bsm` branch on GitHub
 - All Day 6–10 work pushed to `feature/week-02-bsm` branch on GitHub
 - All Day 11–15 work pushed to `feature/week-03-dupire` branch on GitHub
+- All Day 16–20 work pushed to `feature/week-04-heston` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - SVI smile smoothing: flagged for W3 but deliberately NOT done. Rationale: Dupire got
   one week and was validated on synthetic ground truth (clean surfaces) - that taught the
