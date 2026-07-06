@@ -421,6 +421,73 @@ A running record of work completed each day as documentation.
   bias/speed tradeoff than truncated Euler, avoids Broadie-Kaya's numerical Laplace inversion
   cost
 
+### Day 17 - Mon Jul 6
+- **Andersen QE variance sampler** implemented in `models/heston.py`
+  - `cir_qe_regime_params(v_t, kappa, theta, xi, dt, psi_c)` - single source of
+    truth for $m$, $s^2$, $\psi$, and both regimes' moment-matched quantities
+    ($a, b^2$ for squared-Gaussian; $p, \beta$ for point-mass+exponential), shared
+    by the sampler and (Day 18) the spot-side martingale correction
+  - `sample_cir_qe_step` - thin wrapper: draws masked Gaussian/uniform per regime,
+    assigns into `v_next`, never negative by construction
+  - **Silent bugs caught and fixed across iterations**: $s^2$ formula missing a
+    $(1-e^{-\kappa\Delta t})$ factor on the first term, then a sign flip on the
+    second term (`-` instead of `+`, would have made $s^2$ go negative for some
+    parameter regimes); regime-specific quantities (`a`, `b2`, `p`, `beta`) not
+    masked to match random-draw shapes before combining, would have thrown or
+    silently misbehaved on broadcast
+  - **Test-parameter bug, not a code bug**: first attempt at forcing regime 2 used
+    `dt=1/252` with badly-violated Feller, still landed in regime 1. Root cause:
+    $\psi \approx \xi^2\Delta t/v_t$ to leading order, so *smaller* $\Delta t$ pushes
+    toward regime 1 regardless of Feller, regime 2 needs large $\Delta t$/small
+    $v_0$/large $\xi$ together
+- **`tests/test_heston.py`**: moment-matching tests (Feller-satisfied and
+  Feller-violated parameter sets), never-negative regression guard. 24 passed.
+  Known blind spot flagged: moments-only tests can't rule out a regime-1/regime-2
+  swap bug (TODO: add fraction-of-exact-zeros check in a deep regime-2 case)
+- Cosmetic `RuntimeWarning: invalid value encountered in sqrt` on regime-2 paths
+  (computing `b2` unmasked before use) - harmless, correctly masked before
+  assignment, candidate `np.errstate` cleanup, not urgent
+
+### Day 18 - Mon Jul 6
+- **Spot-side simulation, `simulate_heston_paths`**: derived $K_1$-$K_4$ and the
+  regime-specific martingale correction $K_0$ from first principles (integrate the
+  variance SDE, isolate $\xi\int\sqrt{v_s}\,dW^v_s$ as a known quantity from the two
+  QE endpoints, correlated spot noise term follows by dividing by $\xi$ and
+  multiplying by $\rho$) rather than pattern-matching a formula
+  - $K_0$ reuses `cir_qe_regime_params`'s $a,b^2,p,\beta$ directly via each regime's
+    moment-generating function evaluated at $s=K_2+\tfrac12K_4$
+  - Implementation correct on first full pass; only inefficiency flagged:
+    `cir_qe_regime_params` called twice per step (once inside `sample_cir_qe_step`,
+    once directly for $K_0$), wasteful not incorrect, TODO to thread through as a
+    combined return
+- **Martingale property test** (`test_heston_martingale_property`): $E[S_T] = S_0
+  e^{rT}$ checked against a Day-3-style standard-error tolerance
+  ($\sqrt\theta\,S_0e^{rT}\sqrt{T/N}$, $\sqrt\theta$ standing in for constant
+  $\sigma$ since Heston vol mean-reverts rather than staying fixed), 4 SE bound.
+  Passed. This isolates $K_0$ specifically - the Day 17 variance-moment tests never
+  touch the spot process and couldn't have caught a $K_0$ bug
+- **25 tests passing total**
+- **Results generated in `08_heston.ipynb`**:
+  - Leverage effect: largest $v_t$ spike coincides exactly in time (not lagged) with
+    the sharpest $S_t$ drop across sample paths, $\rho=-0.7$ visibly at work
+  - CIR transition density: simulated $v_T$ histogram vs theoretical noncentral
+    $\chi^2$ (via `scipy.stats.ncx2`, parameter mapping $c,df,nc$ from CIR
+    coefficients) - matches near zero; **TODO**: linear-scale plot can't confirm
+    tail agreement past $v_T\approx0.05$, replot log-scale
+  - Endogenous smile: downward-sloping IV vs strike from simulated $S_T$ + MC
+    payoff averaging + `implied_vol` inversion, correct sign for $\rho<0$ (fattened
+    left tail -> higher IV at low strikes), same shape as real Week-1 SPX smile,
+    produced from one correlation parameter rather than fit pointwise
+  - Term structure: long-$T$ smile visibly flatter than short-$T$ at matched
+    strikes - the Week-3-flagged limitation now directly observed, not just asserted
+- **Vega/inversion noise diagnosed at deep ITM strike** ($K=70$ vs $S_0=100$): small
+  kink in the smile traced to $\delta\sigma \approx \delta C/\text{vega}$, low vega
+  amplifies ordinary MC price noise into larger recovered-IV noise (initially
+  guessed backwards - low sensitivity in the forward direction does not mean low
+  noise in the inverse direction). **TODO**: always invert the OTM instrument per
+  strike (call for $K>S_0$, put for $K<S_0$, parity-converted if needed), same
+  principle as the Dupire put-to-call parity TODO, deferred rather than fixed today
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
