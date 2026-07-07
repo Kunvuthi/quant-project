@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from models.heston import sample_cir_qe_step, simulate_heston_paths
+from models.heston import sample_cir_qe_step, simulate_heston_paths, cir_qe_regime_params
 
 
 @pytest.fixture
@@ -79,3 +79,36 @@ def test_heston_martingale_property():
     se_approx = np.sqrt(theta) * S0 * np.exp(r * T) * np.sqrt(T) / np.sqrt(n_paths)
 
     assert abs(empirical_mean - true_mean) < 4 * se_approx
+    
+def test_qe_regime2_zero_fraction():
+    """
+    Regression guard against a regime-1/regime-2 swap bug. Moments-only tests
+    (test_qe_moments_feller_violated) can't distinguish 'correct regime-2 sampling'
+    from 'branches swapped but moments still roughly match', since both branches
+    are moment-matched to the same (m, s2) by construction. This checks the
+    fraction of exact zeros in v_next against p, computed from the SAME
+    cir_qe_regime_params call the sampler itself uses, so a swap or branch bug
+    shows up directly, independent of whether the Day 17 moment formulas are right.
+    """
+    kappa, theta, xi, v0, dt = 1.0, 0.04, 1.5, 0.005, 0.5  # same as feller_violated test
+    n_paths = 200_000
+
+    v_t = np.full(n_paths, v0)
+    rng = np.random.default_rng(0)
+
+    mask_1, a, b2, p, beta = cir_qe_regime_params(v_t, kappa, theta, xi, dt)
+
+    # sanity: this parameter set should be deep enough in regime 2 that the
+    # zero-fraction is actually large enough to be a meaningful check, not noise
+    assert mask_1.mean() < 0.05  # almost all paths in regime 2
+    assert p[0] > 0.1            # p is the same scalar across all paths here, since v_t is constant
+
+    v_next = sample_cir_qe_step(v_t, kappa, theta, xi, dt, rng=rng)
+
+    empirical_zero_frac = (v_next == 0.0).mean()
+    expected_p = p[0]
+
+    # binomial proportion standard error, same logic as any MC convergence check
+    se = np.sqrt(expected_p * (1 - expected_p) / n_paths)
+
+    assert abs(empirical_zero_frac - expected_p) < 4 * se
