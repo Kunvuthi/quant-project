@@ -488,6 +488,40 @@ A running record of work completed each day as documentation.
   strike (call for $K>S_0$, put for $K<S_0$, parity-converted if needed), same
   principle as the Dupire put-to-call parity TODO, deferred rather than fixed today
 
+### Day 19 - Tue Jul 7
+- **TODO 1 closed**: `test_qe_regime2_zero_fraction` added to `test_heston.py`.
+  Guards against a regime-1/regime-2 swap bug that the Day 17 moments-only tests
+  couldn't catch (both branches are moment-matched to the same $m,s^2$, so a swap
+  wouldn't necessarily move the mean/variance). Checks `(v_next == 0.0).mean()`
+  against `p` from `cir_qe_regime_params` directly (not hand-recomputed, so the
+  test tracks the actual formula rather than a stale hardcoded target), tolerance
+  from the binomial proportion standard error. Caught one bug along the way: first
+  attempt reused stale Feller-violated parameters from the original (pre-fix)
+  version of `test_qe_moments_feller_violated` that never actually reached regime 2
+  ($\psi=1.0$ regime-1 boundary, `mask_1.mean()==1.0`); corrected by reusing the
+  actual working parameters from that test. 26 tests passing
+- **TODO 2 closed**: `sample_cir_qe_step` gained `return_diagnostics: bool = False`
+  (default off, all existing call sites and tests unaffected), returning
+  `(v_next, mask_1, a, b2, p, beta)` when `True`. `simulate_heston_paths` now calls
+  `cir_qe_regime_params` exactly once per step via this flag, removing the
+  redundant direct call that previously duplicated the same computation for the
+  $K_0$ correction. Return type hint updated to `Union[np.ndarray, tuple[...]]`.
+  Full suite reconfirmed green after the signature change
+- **TODO 3 closed**: OTM-instrument convention applied to both the smile (result
+  #3) and term-structure (result #4) notebook cells: call priced/inverted for
+  $K\ge S_0$, put for $K<S_0$, put payoff computed directly from simulated $S_T$
+  (not via parity-converted call price, since that would just carry the same MC
+  noise through algebra rather than fixing the conditioning). Confirmed visually:
+  the $K=70$ kink present in Day 18's original smile plot is gone in both replots,
+  clean monotone curves across the full strike range on both maturities
+- Noted in passing: `implied_vol.py` now imported from `calibration.implied_vol`
+  rather than `models.implied_vol` (the longer-deferred move flagged as high-risk
+  due to `test_implied_vol.py` dependency) - confirm and log when/how that move
+  happened if not already captured elsewhere
+- **All three Week 4 open TODOs from Day 18 now closed.** Remaining for tomorrow:
+  Heston characteristic function derivation (last piece of the original Week 4
+  arc, sets up Week 5's Carr-Madan/COS Fourier pricing directly)
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
@@ -508,3 +542,5 @@ A running record of work completed each day as documentation.
   in backtesting so own code focuses on portfolio/strategy logic. Build-to-learn now,
   library-in-production later. (Large C++ dependency - add deliberately when needed, not
   before.)
+
+  
