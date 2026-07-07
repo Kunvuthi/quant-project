@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Literal
+from typing import Union
 
 
 def cir_qe_regime_params(
@@ -39,7 +40,8 @@ def sample_cir_qe_step(
     dt: float,
     psi_c: float = 1.5,
     rng: np.random.Generator = None,
-) -> np.ndarray:
+    return_diagnostics: bool = False
+) -> Union[np.ndarray, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     """One QE step: v_t -> v_{t+dt}, vectorised across paths."""
     mask_1, a, b2, p, beta = cir_qe_regime_params(v_t, kappa, theta, xi, dt, psi_c)
 
@@ -52,6 +54,9 @@ def sample_cir_qe_step(
     # --- Regime 2: point mass + exponential ---
     U = rng.uniform(0, 1, len(v_t)-mask_1.sum())           # only for the other paths
     v_next[~mask_1] = np.where(U <= p[~mask_1], 0.0, np.log((1-p[~mask_1])/(1-U)) / beta[~mask_1])
+    
+    if return_diagnostics:
+        return v_next, mask_1, a, b2, p, beta
 
     return v_next
 
@@ -82,27 +87,21 @@ def simulate_heston_paths(
     for i in range(n_steps):
         v_t = v[:, i]
 
-        # 1. advance variance: call your existing sample_cir_qe_step
-        v_next = sample_cir_qe_step(v_t, kappa, theta, xi, dt, psi_c, rng)
+        # 1. advance variance: call your existing sample_cir_qe_step and compute parameters
+        v_next, mask_1, a, b2, p, beta = sample_cir_qe_step(v_t, kappa, theta, xi, dt, psi_c, rng, return_diagnostics=True)     
 
-        # 2. recompute regime quantities (m, s2, psi, mask_1, a, b2, p, beta)
-        #    for THIS step, needed for K0. Question below on how to avoid
-        #    duplicating this logic from sample_cir_qe_step.
-        mask_1, a, b2, p, beta = cir_qe_regime_params(v_t, kappa, theta, xi, dt, psi_c)
-
-        # 3. s = K2 + 0.5*K4   (scalar, doesn't depend on path or regime)
+        # 2. s = K2 + 0.5*K4   (scalar, doesn't depend on path or regime)
         s = K2 + 0.5*K4 
 
-        # 4. K0, computed per-path depending on which regime each path is in
+        # 3. K0, computed per-path depending on which regime each path is in
         K0_regime1_formula = -(K1 + 0.5*K3)*v_t - (s*a*b2)/(1-2*s*a) + 0.5*np.log(1-2*s*a)
         K0_regime2_formula = -(K1 + 0.5*K3)*v_t - np.log(p+((1-p)*beta)/(beta-s))
         K0 = np.where(mask_1, K0_regime1_formula, K0_regime2_formula)
-        
 
-        # 5. independent Gaussian for the leftover spot noise
+        # 4. independent Gaussian for the leftover spot noise
         Z_perp = rng.standard_normal(n_paths)
 
-        # 6. log-spot update
+        # 5. log-spot update
         log_S_next = np.log(S[:, i]) + r*dt + K0 + K1*v_t + K2*v_next \
                      + np.sqrt(K3*v_t + K4*v_next) * Z_perp
 
