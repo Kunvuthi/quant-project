@@ -398,6 +398,153 @@ A running record of work completed each day as documentation.
   W3. Dupire validated on synthetic ground truth only; real-data smoothing deferred to
   where Heston lives longest (W4-W6) and calibration needs a clean target surface.
 
+## Week 4 (Jul 2 - Jul 8): Dupire Local Volatility
+
+### Day 16 - Thu Jul 2
+- Branch `feature/week-04-heston` created off `main` (v0.3-week3)
+- **Conceptual groundwork only, no code yet** - Heston SDE system, Feller condition, and the
+  CIR-to-noncentral-chi-squared link (thread closed from Day 7/Day 10) worked through from
+  first principles before touching simulation code
+- Established why $(S_t, v_t)$ jointly Markovian but $S_t$ alone is not - Feynman-Kac gives a
+  3D PDE $(t,S,v)$ here vs Dupire's 2D $(t,S)$, motivates going straight to characteristic-
+  function pricing in W5 rather than a direct PDE solve
+- Traced Euler discretization failure mode for CIR: unbounded Gaussian shock evaluated at
+  interval start can drive $v$ negative for any $\Delta t > 0$; Feller condition reduces
+  frequency but does not eliminate the failure mode structurally
+- Compared exact CIR sampling (noncentral chi-squared via Poisson-mixture) vs Euler on cost,
+  and separately identified why exact *joint* $(S,v)$ simulation (Broadie-Kaya) needs the
+  integrated variance $\int_t^{t+\Delta t} v_s\,ds$ conditional on both endpoints, not just the
+  endpoints themselves - no closed form, inverted numerically from Laplace transform
+- Notebook `07_heston.ipynb` started: intro (motivation, SDE system, CIR/chi-squared thread
+  payoff, week plan) and lessons-learned section written up
+- **Decision**: implement Andersen QE tomorrow (Day 17) rather than full Broadie-Kaya - better
+  bias/speed tradeoff than truncated Euler, avoids Broadie-Kaya's numerical Laplace inversion
+  cost
+
+### Day 17 - Mon Jul 6
+- **Andersen QE variance sampler** implemented in `models/heston.py`
+  - `cir_qe_regime_params(v_t, kappa, theta, xi, dt, psi_c)` - single source of
+    truth for $m$, $s^2$, $\psi$, and both regimes' moment-matched quantities
+    ($a, b^2$ for squared-Gaussian; $p, \beta$ for point-mass+exponential), shared
+    by the sampler and (Day 18) the spot-side martingale correction
+  - `sample_cir_qe_step` - thin wrapper: draws masked Gaussian/uniform per regime,
+    assigns into `v_next`, never negative by construction
+  - **Silent bugs caught and fixed across iterations**: $s^2$ formula missing a
+    $(1-e^{-\kappa\Delta t})$ factor on the first term, then a sign flip on the
+    second term (`-` instead of `+`, would have made $s^2$ go negative for some
+    parameter regimes); regime-specific quantities (`a`, `b2`, `p`, `beta`) not
+    masked to match random-draw shapes before combining, would have thrown or
+    silently misbehaved on broadcast
+  - **Test-parameter bug, not a code bug**: first attempt at forcing regime 2 used
+    `dt=1/252` with badly-violated Feller, still landed in regime 1. Root cause:
+    $\psi \approx \xi^2\Delta t/v_t$ to leading order, so *smaller* $\Delta t$ pushes
+    toward regime 1 regardless of Feller, regime 2 needs large $\Delta t$/small
+    $v_0$/large $\xi$ together
+- **`tests/test_heston.py`**: moment-matching tests (Feller-satisfied and
+  Feller-violated parameter sets), never-negative regression guard. 24 passed.
+  Known blind spot flagged: moments-only tests can't rule out a regime-1/regime-2
+  swap bug (TODO: add fraction-of-exact-zeros check in a deep regime-2 case)
+- Cosmetic `RuntimeWarning: invalid value encountered in sqrt` on regime-2 paths
+  (computing `b2` unmasked before use) - harmless, correctly masked before
+  assignment, candidate `np.errstate` cleanup, not urgent
+
+### Day 18 - Mon Jul 6
+- **Spot-side simulation, `simulate_heston_paths`**: derived $K_1$-$K_4$ and the
+  regime-specific martingale correction $K_0$ from first principles (integrate the
+  variance SDE, isolate $\xi\int\sqrt{v_s}\,dW^v_s$ as a known quantity from the two
+  QE endpoints, correlated spot noise term follows by dividing by $\xi$ and
+  multiplying by $\rho$) rather than pattern-matching a formula
+  - $K_0$ reuses `cir_qe_regime_params`'s $a,b^2,p,\beta$ directly via each regime's
+    moment-generating function evaluated at $s=K_2+\tfrac12K_4$
+  - Implementation correct on first full pass; only inefficiency flagged:
+    `cir_qe_regime_params` called twice per step (once inside `sample_cir_qe_step`,
+    once directly for $K_0$), wasteful not incorrect, TODO to thread through as a
+    combined return
+- **Martingale property test** (`test_heston_martingale_property`): $E[S_T] = S_0
+  e^{rT}$ checked against a Day-3-style standard-error tolerance
+  ($\sqrt\theta\,S_0e^{rT}\sqrt{T/N}$, $\sqrt\theta$ standing in for constant
+  $\sigma$ since Heston vol mean-reverts rather than staying fixed), 4 SE bound.
+  Passed. This isolates $K_0$ specifically - the Day 17 variance-moment tests never
+  touch the spot process and couldn't have caught a $K_0$ bug
+- **25 tests passing total**
+- **Results generated in `08_heston.ipynb`**:
+  - Leverage effect: largest $v_t$ spike coincides exactly in time (not lagged) with
+    the sharpest $S_t$ drop across sample paths, $\rho=-0.7$ visibly at work
+  - CIR transition density: simulated $v_T$ histogram vs theoretical noncentral
+    $\chi^2$ (via `scipy.stats.ncx2`, parameter mapping $c,df,nc$ from CIR
+    coefficients) - matches near zero; **TODO**: linear-scale plot can't confirm
+    tail agreement past $v_T\approx0.05$, replot log-scale
+  - Endogenous smile: downward-sloping IV vs strike from simulated $S_T$ + MC
+    payoff averaging + `implied_vol` inversion, correct sign for $\rho<0$ (fattened
+    left tail -> higher IV at low strikes), same shape as real Week-1 SPX smile,
+    produced from one correlation parameter rather than fit pointwise
+  - Term structure: long-$T$ smile visibly flatter than short-$T$ at matched
+    strikes - the Week-3-flagged limitation now directly observed, not just asserted
+- **Vega/inversion noise diagnosed at deep ITM strike** ($K=70$ vs $S_0=100$): small
+  kink in the smile traced to $\delta\sigma \approx \delta C/\text{vega}$, low vega
+  amplifies ordinary MC price noise into larger recovered-IV noise (initially
+  guessed backwards - low sensitivity in the forward direction does not mean low
+  noise in the inverse direction). **TODO**: always invert the OTM instrument per
+  strike (call for $K>S_0$, put for $K<S_0$, parity-converted if needed), same
+  principle as the Dupire put-to-call parity TODO, deferred rather than fixed today
+
+### Day 19 - Tue Jul 7
+- **TODO 1 closed**: `test_qe_regime2_zero_fraction` added to `test_heston.py`.
+  Guards against a regime-1/regime-2 swap bug that the Day 17 moments-only tests
+  couldn't catch (both branches are moment-matched to the same $m,s^2$, so a swap
+  wouldn't necessarily move the mean/variance). Checks `(v_next == 0.0).mean()`
+  against `p` from `cir_qe_regime_params` directly (not hand-recomputed, so the
+  test tracks the actual formula rather than a stale hardcoded target), tolerance
+  from the binomial proportion standard error. Caught one bug along the way: first
+  attempt reused stale Feller-violated parameters from the original (pre-fix)
+  version of `test_qe_moments_feller_violated` that never actually reached regime 2
+  ($\psi=1.0$ regime-1 boundary, `mask_1.mean()==1.0`); corrected by reusing the
+  actual working parameters from that test. 26 tests passing
+- **TODO 2 closed**: `sample_cir_qe_step` gained `return_diagnostics: bool = False`
+  (default off, all existing call sites and tests unaffected), returning
+  `(v_next, mask_1, a, b2, p, beta)` when `True`. `simulate_heston_paths` now calls
+  `cir_qe_regime_params` exactly once per step via this flag, removing the
+  redundant direct call that previously duplicated the same computation for the
+  $K_0$ correction. Return type hint updated to `Union[np.ndarray, tuple[...]]`.
+  Full suite reconfirmed green after the signature change
+- **TODO 3 closed**: OTM-instrument convention applied to both the smile (result
+  #3) and term-structure (result #4) notebook cells: call priced/inverted for
+  $K\ge S_0$, put for $K<S_0$, put payoff computed directly from simulated $S_T$
+  (not via parity-converted call price, since that would just carry the same MC
+  noise through algebra rather than fixing the conditioning). Confirmed visually:
+  the $K=70$ kink present in Day 18's original smile plot is gone in both replots,
+  clean monotone curves across the full strike range on both maturities
+- Noted in passing: `implied_vol.py` now imported from `calibration.implied_vol`
+  rather than `models.implied_vol` (the longer-deferred move flagged as high-risk
+  due to `test_implied_vol.py` dependency) - confirm and log when/how that move
+  happened if not already captured elsewhere
+- **All three Week 4 open TODOs from Day 18 now closed.** Remaining for tomorrow:
+  Heston characteristic function derivation (last piece of the original Week 4
+  arc, sets up Week 5's Carr-Madan/COS Fourier pricing directly)
+
+### Day 20 - Wed Jul 8
+- **Heston characteristic function derived**, last piece of the Week 4 arc, sets up
+  Week 5's Carr-Madan/COS directly
+  - Backward Kolmogorov PDE (Feynman-Kac) rebuilt from first principles via Ito's
+    product rule on the martingale $N_t=e^{-rt}u(t,X_t)$, since this hadn't been
+    covered before (only the forward/Fokker-Planck side, from Dupire), collecting
+    the $dt$-drift and setting it to zero
+  - Extended to the Heston pair $(x=\ln S, v)$: three second-derivative terms (two
+    pure, one $\rho$-correlation cross term), full PDE derived term by term,
+    coefficients confirmed correctly by hand before assembly
+  - Affine ansatz $\phi=\exp(iux+C(\tau)+D(\tau)v)$ substituted, PDE separated into
+    a linear ODE for $C$ and a Riccati ODE for $D$; closed-form Riccati solution
+    taken as reference (Heston 1993/Gatheral), consistent with house convention of
+    deriving structural results but referencing genuinely involved closed-form
+    algebra
+  - Full derivation and closed-form written up in `08_heston.ipynb`
+- **Week 4 (Heston) closed.** QE variance sampler, correlated path simulator with
+  properly-derived martingale correction, four validated results (leverage effect,
+  chi-squared tail, endogenous smile, term-structure flattening), OTM-instrument
+  convention fixed, characteristic function derived. 26 tests passing
+- Branch `feature/week-04-heston` ready to merge `--no-ff`, tag `v0.4-week4`
+- **Next**: Week 5, Fourier pricing (Carr-Madan, COS), building directly on
+  today's $\phi(u;\tau)$, new notebook `09_fourier_pricing.ipynb`
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
@@ -406,6 +553,7 @@ A running record of work completed each day as documentation.
 - All Day 1–5 work pushed to `feature/week-01-bsm` branch on GitHub
 - All Day 6–10 work pushed to `feature/week-02-bsm` branch on GitHub
 - All Day 11–15 work pushed to `feature/week-03-dupire` branch on GitHub
+- All Day 16–20 work pushed to `feature/week-04-heston` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - SVI smile smoothing: flagged for W3 but deliberately NOT done. Rationale: Dupire got
   one week and was validated on synthetic ground truth (clean surfaces) - that taught the
@@ -418,3 +566,5 @@ A running record of work completed each day as documentation.
   in backtesting so own code focuses on portfolio/strategy logic. Build-to-learn now,
   library-in-production later. (Large C++ dependency - add deliberately when needed, not
   before.)
+
+  
