@@ -522,6 +522,30 @@ A running record of work completed each day as documentation.
   Heston characteristic function derivation (last piece of the original Week 4
   arc, sets up Week 5's Carr-Madan/COS Fourier pricing directly)
 
+### Day 20 - Wed Jul 8
+- **Heston characteristic function derived**, last piece of the Week 4 arc, sets up
+  Week 5's Carr-Madan/COS directly
+  - Backward Kolmogorov PDE (Feynman-Kac) rebuilt from first principles via Ito's
+    product rule on the martingale $N_t=e^{-rt}u(t,X_t)$, since this hadn't been
+    covered before (only the forward/Fokker-Planck side, from Dupire), collecting
+    the $dt$-drift and setting it to zero
+  - Extended to the Heston pair $(x=\ln S, v)$: three second-derivative terms (two
+    pure, one $\rho$-correlation cross term), full PDE derived term by term,
+    coefficients confirmed correctly by hand before assembly
+  - Affine ansatz $\phi=\exp(iux+C(\tau)+D(\tau)v)$ substituted, PDE separated into
+    a linear ODE for $C$ and a Riccati ODE for $D$; closed-form Riccati solution
+    taken as reference (Heston 1993/Gatheral), consistent with house convention of
+    deriving structural results but referencing genuinely involved closed-form
+    algebra
+  - Full derivation and closed-form written up in `08_heston.ipynb`
+- **Week 4 (Heston) closed.** QE variance sampler, correlated path simulator with
+  properly-derived martingale correction, four validated results (leverage effect,
+  chi-squared tail, endogenous smile, term-structure flattening), OTM-instrument
+  convention fixed, characteristic function derived. 26 tests passing
+- Branch `feature/week-04-heston` ready to merge `--no-ff`, tag `v0.4-week4`
+- **Next**: Week 5, Fourier pricing (Carr-Madan, COS), building directly on
+  today's $\phi(u;\tau)$, new notebook `09_fourier_pricing.ipynb`
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
