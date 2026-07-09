@@ -109,3 +109,37 @@ def simulate_heston_paths(
         S[:, i+1] = np.exp(log_S_next)
 
     return S, v
+
+def heston_char_func(
+    u: np.ndarray,
+    S0: float, v0: float,
+    kappa: float, theta: float, xi: float, rho: float, r: float,
+    tau: float,
+) -> np.ndarray:
+    """
+    Heston characteristic function phi(u; tau) = E[e^{iu ln S_T}].
+    Uses the branch-safe ("little trap"-avoiding) formulation: the Riccati
+    equation has two equally valid roots differing by the sign of d, the
+    naive root (Heston 1993 original) produces a discontinuous complex log
+    for long maturities / certain parameter regimes (Albrecher et al. 2007,
+    "The Little Heston Trap"); using the other root avoids the branch cut
+    in practice.
+    """
+    u = np.asarray(u, dtype=np.complex128)
+
+    d = np.sqrt((rho * xi * 1j * u - kappa)**2 + xi**2 * (1j * u + u**2))
+
+    # branch-safe root: note the SIGN FLIP vs the naive g, this is the fix
+    g = (kappa - rho * xi * 1j * u - d) / (kappa - rho * xi * 1j * u + d)
+
+    exp_dt = np.exp(-d * tau)
+
+    C = (r * 1j * u * tau
+         + (kappa * theta / xi**2)
+         * ((kappa - rho * xi * 1j * u - d) * tau
+            - 2 * np.log((1 - g * exp_dt) / (1 - g)))
+        )
+
+    D = ((kappa - rho * xi * 1j * u - d) / xi**2) * ((1 - exp_dt) / (1 - g * exp_dt))
+
+    return np.exp(1j * u * np.log(S0) + C + D * v0)

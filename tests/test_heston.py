@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from models.heston import sample_cir_qe_step, simulate_heston_paths, cir_qe_regime_params
+from models.heston import sample_cir_qe_step, simulate_heston_paths, cir_qe_regime_params, heston_char_func
 
 
 @pytest.fixture
@@ -112,3 +112,24 @@ def test_qe_regime2_zero_fraction():
     se = np.sqrt(expected_p * (1 - expected_p) / n_paths)
 
     assert abs(empirical_zero_frac - expected_p) < 4 * se
+
+
+def test_heston_char_func_long_maturity_stability():
+    """
+    Regression guard against the 'Little Heston Trap' (Albrecher et al. 2007):
+    the naive Riccati root produces a discontinuous complex log for long
+    maturities, this checks phi is smooth (no jump) across a fine tau grid
+    at parameters known to trigger the naive-formula discontinuity.
+    """
+    S0, v0 = 100.0, 0.04
+    kappa, theta, xi, rho, r = 1.5, 0.04, 0.9, -0.7, 0.05  # high xi, long horizon stresses this
+    u_test = 5.0  # a single, moderately large u also stresses this more than u near 0
+
+    taus = np.linspace(0.1, 10.0, 200)
+    phi_vals = np.array([heston_char_func(u_test, S0, v0, kappa, theta, xi, rho, r, tau)
+                          for tau in taus])
+
+    # phi should vary smoothly; a branch-cut jump shows up as an abrupt
+    # discontinuity in |phi| or its phase between adjacent tau values
+    jumps = np.abs(np.diff(phi_vals))
+    assert jumps.max() < 10 * np.median(jumps), "discontinuity detected, possible branch-cut issue"
