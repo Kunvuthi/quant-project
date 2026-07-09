@@ -398,7 +398,7 @@ A running record of work completed each day as documentation.
   W3. Dupire validated on synthetic ground truth only; real-data smoothing deferred to
   where Heston lives longest (W4-W6) and calibration needs a clean target surface.
 
-## Week 4 (Jul 2 - Jul 8): Dupire Local Volatility
+## Week 4 (Jul 2 - Jul 8): Heston
 
 ### Day 16 - Thu Jul 2
 - Branch `feature/week-04-heston` created off `main` (v0.3-week3)
@@ -546,6 +546,31 @@ A running record of work completed each day as documentation.
 - **Next**: Week 5, Fourier pricing (Carr-Madan, COS), building directly on
   today's $\phi(u;\tau)$, new notebook `09_fourier_pricing.ipynb`
 
+
+## Week 5 (Jul 9 - Jul 22): Fourier Pricing
+
+### Day 21 - Thu Jul 9
+- Week 4 (Heston) merged --no-ff into main, tagged v0.4-week4
+- Week 5 (Fourier pricing) started. `heston_char_func` implemented in
+  `models/heston.py`, using the branch-safe Riccati root (Albrecher et al. 2007,
+  "The Little Heston Trap") rather than the naive Heston (1993) form, which
+  produces a discontinuous complex log for long maturities/high vol-of-vol.
+  Sign flip in the definition of `g` is the entire fix, everything else identical
+  to the derivation from Day 20
+  - Cross-domain note: Riccati equation naming connects directly to LQR/Kalman
+    covariance propagation from control theory, same quadratic-in-the-unknown
+    backward-in-time structure, both arising from a linear-quadratic cost/variance
+    object propagated via Feynman-Kac-adjacent machinery
+- COS method theory covered conceptually: truncate density to $[a,b]$, cosine-series
+  coefficients $A_k$ recoverable directly from $\phi(u_k)$ (no numerical
+  integration), price collapses to a finite sum $\sum A_k V_k$ against payoff
+  cosine coefficients $V_k$. Implementation (choosing $[a,b]$ from cumulants,
+  deriving $V_k$ for a call, assembly + MC cross-validation) deferred to next
+  session
+- **Schedule change**: Jul 13-19 off (graduation ceremony + holiday). Week 5
+  continues tomorrow (early start planned), remainder resumes after the break,
+  downstream weeks (6-9) shift accordingly, no fixed date target for now
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
@@ -554,6 +579,7 @@ A running record of work completed each day as documentation.
 - All Day 6–10 work pushed to `feature/week-02-bsm` branch on GitHub
 - All Day 11–15 work pushed to `feature/week-03-dupire` branch on GitHub
 - All Day 16–20 work pushed to `feature/week-04-heston` branch on GitHub
+- All Day 21–25 work pushed to `feature/week-05-fourier-pricing` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - SVI smile smoothing: flagged for W3 but deliberately NOT done. Rationale: Dupire got
   one week and was validated on synthetic ground truth (clean surfaces) - that taught the
