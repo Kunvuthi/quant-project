@@ -571,6 +571,40 @@ A running record of work completed each day as documentation.
   continues tomorrow (early start planned), remainder resumes after the break,
   downstream weeks (6-9) shift accordingly, no fixed date target for now
 
+### Day 22 - Fri Jul 10
+- **`heston_char_func` validated** against two independent checks before building on it:
+  - `phi(u=0)=1` exactly, for any tau (trivial but effective boundary sanity check)
+  - Cross-checked against Week 4's Monte Carlo simulator directly:
+    `mean(exp(iu*ln(S_T)))` over simulated paths vs `heston_char_func(u,...)`,
+    tolerance derived from the bound Var(unit-modulus RV) <= 1, giving
+    SE <= 1/sqrt(N), checked at 3 SE (~6.7e-3 at N=200k). Both passed
+- **COS method implemented end to end** in `pricing/fourier.py`:
+  - `heston_cumulants` (c1, c2, closed form, Fang & Oosterlee), validated against
+    the xi->0, v0=theta limit collapsing exactly onto BSM's known mean and variance
+    of ln(S_T), both c1 and c2 checked independently
+  - `cos_truncation_range` (a, b from cumulants, c4=0 simplification)
+  - `cos_call_coefficients` (V_k, payoff cosine coefficients, reference formula)
+  - `cos_call_price` assembling A_k, V_k, and the k=0 half-weight into the final sum
+- **Bug found and fixed**: COS price (4.75) disagreed sharply with an independent
+  direct Fourier-inversion cross-check (6.84, matching MC's 6.83) built specifically
+  to isolate whether the char function or the COS assembly was at fault, confirmed
+  char function was fine. Diagnosed via an L-sweep (price should stabilize once the
+  truncation range is wide enough; instead it kept halving as L doubled), a
+  dimensional tell rather than a one-off wrong number. Root cause: `A_k` and `V_k`
+  each independently carried a `2/(b-a)` normalization factor, but only `A_k`
+  (the density's cosine coefficient) should carry it; `V_k` is a plain payoff
+  integral against a raw cosine and picked up a spurious second copy. Removed the
+  factor from `cos_call_coefficients`, confirmed price stabilizes across L after
+  the fix
+- **`test_cos_call_price_vs_monte_carlo`** passing, tolerance from the MC sample's
+  own empirical standard error (not a guessed constant)
+- **Week 5 status at the break**: characteristic function + COS method fully
+  implemented and validated end to end. Carr-Madan and the convergence-rate
+  validation suite (COS accuracy vs N, vs MC, across strikes) deferred to after
+  the break
+- **Break starts now**: Jul 13-19 off (graduation ceremony + holiday). Resume
+  Week 5 wrap-up (Carr-Madan, convergence checks) whenever back, no fixed date
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
