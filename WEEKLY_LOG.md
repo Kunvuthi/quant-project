@@ -605,6 +605,52 @@ A running record of work completed each day as documentation.
 - **Break starts now**: Jul 13-19 off (graduation ceremony + holiday). Resume
   Week 5 wrap-up (Carr-Madan, convergence checks) whenever back, no fixed date
 
+### Day 23 - Mon Jul 20
+- Back from the Jul 13-19 break, resumed Week 5
+- **COS convergence-rate validation**: rather than using MC as the reference
+  (its own irreducible ~1/sqrt(N) noise floor would swamp COS's much smaller
+  error at moderate N), used a high-N (2048) COS price as a converged reference
+  instead, standard technique when no independent closed form exists but a
+  method is known to converge. Confirmed exponential convergence (error dropped
+  ~6 orders of magnitude from N=8 to N=64 on a semilog(error) vs N plot, straight
+  line as spectral-accuracy theory predicts), flattening near ~1e-13 once both
+  sides hit floating-point noise
+- **Refactored `cos_call_price`** to separate the strike-independent `A_k`
+  (density coefficients, needs `heston_char_func`) from the cheap per-strike
+  `V_k`, added `cos_density_coefficients` and `cos_smile` for batched strike-strip
+  pricing without recomputing `A_k` per strike, same pattern as Day 18's
+  `cir_qe_regime_params` factoring
+- **Added native put pricing**: `cos_put_coefficients`, derived independently
+  (not via parity) specifically so it serves as a real cross-check on the call
+  path rather than a guaranteed-to-agree algebraic restatement of a potential bug
+- **Two real bugs caught by the new test suite** (`test_fourier.py`):
+  1. The `A_k`/`V_k` double-`2/(b-a)` normalization regression (from Day 22-23)
+     briefly reappeared during the refactor, caught immediately by
+     `test_cos_call_price_vs_monte_carlo` reproducing the exact old wrong price
+  2. `cos_put_coefficients` had two compounding transcription errors: `K`
+     multiplying the wrong building block (`chi` instead of `psi`) and an overall
+     sign flip, `chi - K*psi` where the derivation needs `K*psi - chi`. Root
+     cause worth remembering: the put isn't just the call's formula over
+     different bounds, the payoffs are algebraic negatives of each other
+     ($K-e^x=-(e^x-K)$), so the whole expression's sign structure needs
+     re-deriving, not just the integration bounds swapped. Caught via
+     `test_cos_put_vs_parity` and confirmed step by step with direct numerical
+     checks against the parity target until the sign landed correctly
+  3. `cos_smile`'s `np.empty_like(strikes)` silently inherited int64 dtype when
+     given integer strikes, truncating prices; fixed to
+     `np.empty(len(strikes), dtype=float)`, regression-guarded by
+     `test_cos_smile_dtype_safety`
+- Removed duplicate `test_cos_call_price_vs_monte_carlo` left in `test_heston.py`
+  after moving it to `test_fourier.py`
+- **35 tests passing.** Full COS pricer (calls, puts, batched smile) validated:
+  convergence rate, MC cross-check, put-call parity, dtype safety
+- Full smile plotted in `09_fourier_pricing.ipynb`: COS vs MC, same shape, COS
+  smooth/instant, MC visibly noisier at the same strikes
+- **Week 5 core methods done.** Carr-Madan still open (lower priority now that
+  COS is fully validated and will likely be the production method going forward);
+  next up whenever picked up: Carr-Madan implementation, or move straight to
+  Week 6 (calibration) if Carr-Madan is deprioritized entirely
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
