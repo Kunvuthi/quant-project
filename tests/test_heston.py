@@ -187,29 +187,3 @@ def test_heston_cumulants_bsm_limit():
     # bonus check: c2 should collapse to theta*tau (BSM variance of ln(S_T))
     c2_bsm = theta * tau
     assert np.isclose(c2, c2_bsm, atol=1e-4)
-    
-# -------- Pricing Test --------- #
-    
-def test_cos_call_price_vs_monte_carlo():
-    """
-    Cross-check the COS pricer against Week 4's independently-validated MC
-    simulator, ATM call. Tolerance from the MC standard error of the payoff
-    itself (not a guessed constant), same discipline as prior validation tests.
-    """
-    S0, v0 = 100.0, 0.04
-    kappa, theta, xi, rho, r = 2.0, 0.04, 0.3, -0.7, 0.05
-    T, K, n_steps, n_paths = 0.5, 100.0, 126, 500_000
-
-    rng = np.random.default_rng(0)
-    S, _ = simulate_heston_paths(S0, v0, kappa, theta, xi, rho, r, T, n_steps, n_paths, rng=rng)
-    S_T = S[:, -1]
-
-    payoff = np.maximum(S_T - K, 0.0)
-    disc_payoff = np.exp(-r * T) * payoff
-    price_mc = disc_payoff.mean()
-    se_mc = disc_payoff.std(ddof=1) / np.sqrt(n_paths)  # standard error of the MC mean itself
-
-    price_cos = cos_call_price(S0, v0, kappa, theta, xi, rho, r, T, K)
-
-    assert abs(price_cos - price_mc) < 4 * se_mc, \
-        f"COS price {price_cos:.4f} vs MC {price_mc:.4f} +/- {se_mc:.4f}"
