@@ -651,6 +651,39 @@ A running record of work completed each day as documentation.
   next up whenever picked up: Carr-Madan implementation, or move straight to
   Week 6 (calibration) if Carr-Madan is deprioritized entirely
 
+### Day 24 - Tue Jul 21
+- **Carr-Madan method derived and implemented**, `pricing/carr_madan.py`
+  - Derivation: raw call price $C(k)$ doesn't decay as $k\to-\infty$ (approaches
+    $S_0$, a constant), so it isn't Fourier-transformable as-is. Damping factor
+    $e^{\alpha k}$ ($\alpha>0$) forces left-tail decay, constrained from above by
+    not overpowering the right tail's already-existing decay, formal constraint
+    $E[S_T^{\alpha+1}]<\infty$, $\alpha=1.5$ used as the standard practical default
+  - Damped transform $\psi(u)$ derived, evaluates the existing `heston_char_func`
+    at a shifted complex argument $u-(\alpha+1)i$, no new characteristic-function
+    code needed
+  - DFT sampling identity derived from first principles (matching
+    `np.fft.fft`'s exponent against the integral's kernel term by term):
+    $\Delta u\cdot\Delta k=2\pi/N$, frequency-grid and strike-grid spacing are not
+    independent choices, a genuine resolution/accuracy trade-off, not a free
+    parameter each
+  - Implementation: grid construction (u, dk, k, strikes) written independently
+    from the derived identity; Simpson's rule weights, the $k_0$ phase-shift
+    correction, and damping removal taken as scaffolded reference (standard
+    implementation mechanics of the method, not something to re-derive)
+  - **Correct on first full run**, no debugging needed this time, validated
+    directly against COS across a strike spread (K=80 to 116), agreement to 5
+    decimal places
+  - `test_carr_madan_vs_cos` added, looser tolerance (1e-2) than COS's internal
+    convergence checks, appropriate given Carr-Madan's real FFT/Simpson
+    truncation error vs COS's exponential convergence
+  - Theory write-up drafted for `09_fourier_pricing.ipynb` (not yet pasted in)
+- **Still open for tomorrow before Week 5 closes**:
+  - Native put pricing for Carr-Madan (currently calls-only)
+  - Notebook demo cell: Carr-Madan smile, likely a three-way overlay against
+    COS and MC for a clean capstone visual
+  - Final wrap-up, merge/tag, and handover prep for a fresh chat session
+    starting Week 6
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
