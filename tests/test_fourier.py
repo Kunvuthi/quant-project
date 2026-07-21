@@ -4,6 +4,7 @@ from pricing.fourier import (
     cos_call_price, cos_put_price, cos_smile,
     cos_call_coefficients, cos_put_coefficients,
 )
+from pricing.carr_madan import carr_madan_call_prices
 
 S0, v0 = 100.0, 0.04
 kappa, theta, xi, rho, r = 2.0, 0.04, 0.3, -0.7, 0.05
@@ -75,3 +76,23 @@ def test_cos_smile_dtype_safety():
     prices = cos_smile(S0, v0, kappa, theta, xi, rho, r, T, strikes_int, option_type='call')
     assert prices.dtype == np.float64
     assert np.all(prices > 0)  # would be silently zero/wrong if truncated to int
+    
+# ---- Car-Madan ---- #
+    
+def test_carr_madan_vs_cos():
+    """
+    Carr-Madan FFT strip vs the already-validated COS pricer, at a spread of
+    strikes. Looser tolerance than COS-vs-itself convergence checks, since
+    Carr-Madan's FFT/Simpson discretization has real truncation error, unlike
+    COS's exponential convergence.
+    """
+    S0, v0 = 100.0, 0.04
+    kappa, theta, xi, rho, r = 2.0, 0.04, 0.3, -0.7, 0.05
+    T = 0.5
+
+    strikes, cm_prices = carr_madan_call_prices(S0, v0, kappa, theta, xi, rho, r, T)
+
+    mask = (strikes > 70) & (strikes < 130)
+    for K, cm_price in zip(strikes[mask][::50], cm_prices[mask][::50]):
+        cos_price = cos_call_price(S0, v0, kappa, theta, xi, rho, r, T, K)
+        assert abs(cm_price - cos_price) < 1e-2, f"K={K}: CM={cm_price}, COS={cos_price}"
