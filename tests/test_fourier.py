@@ -1,10 +1,11 @@
 import numpy as np
 from models.heston import simulate_heston_paths
 from pricing.fourier import (
-    cos_call_price, cos_put_price, cos_smile,
-    cos_call_coefficients, cos_put_coefficients,
+    cos_call_price, cos_put_price, cos_smile
 )
-from pricing.carr_madan import carr_madan_call_prices
+from pricing.carr_madan import (
+    carr_madan_call_prices, carr_madan_put_prices
+)
 
 S0, v0 = 100.0, 0.04
 kappa, theta, xi, rho, r = 2.0, 0.04, 0.3, -0.7, 0.05
@@ -86,13 +87,23 @@ def test_carr_madan_vs_cos():
     Carr-Madan's FFT/Simpson discretization has real truncation error, unlike
     COS's exponential convergence.
     """
-    S0, v0 = 100.0, 0.04
-    kappa, theta, xi, rho, r = 2.0, 0.04, 0.3, -0.7, 0.05
-    T = 0.5
-
     strikes, cm_prices = carr_madan_call_prices(S0, v0, kappa, theta, xi, rho, r, T)
 
     mask = (strikes > 70) & (strikes < 130)
     for K, cm_price in zip(strikes[mask][::50], cm_prices[mask][::50]):
         cos_price = cos_call_price(S0, v0, kappa, theta, xi, rho, r, T, K)
         assert abs(cm_price - cos_price) < 1e-2, f"K={K}: CM={cm_price}, COS={cos_price}"
+        
+def test_carr_madan_put_vs_cos_put():
+    """
+    CM put (parity-derived from the CM call strip) vs COS's natively-derived
+    put. Agreement here is real cross-validation signal: one path is
+    FFT+parity, the other is an independent cosine-series put derivation,
+    not just parity algebra checking itself.
+    """
+    strikes, cm_puts = carr_madan_put_prices(S0, v0, kappa, theta, xi, rho, r, T)
+
+    mask = (strikes > 70) & (strikes < 130)
+    for K, cm_put in zip(strikes[mask][::50], cm_puts[mask][::50]):
+        cos_put = cos_put_price(S0, v0, kappa, theta, xi, rho, r, T, K)
+        assert abs(cm_put - cos_put) < 1e-2, f"K={K}: CM put={cm_put}, COS put={cos_put}"

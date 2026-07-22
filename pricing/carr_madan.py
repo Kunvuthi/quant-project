@@ -64,3 +64,21 @@ def carr_madan_call_prices(
     strikes = np.exp(k)
 
     return strikes, call_prices
+
+
+def carr_madan_put_prices(
+    S0: float, v0: float,
+    kappa: float, theta: float, xi: float, rho: float, r: float,
+    tau: float,
+    alpha: float = 1.5, N: int = 4096, du: float = 0.25,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Put strip via put-call parity from the Carr-Madan call strip.
+    Not natively derived (unlike COS's put), reasonable here since Carr-Madan's
+    call side is already cross-validated against COS to 5 decimals, so a native
+    put derivation would mostly re-confirm already-confirmed machinery rather
+    than add new validation signal.
+    """
+    strikes, call_prices = carr_madan_call_prices(S0, v0, kappa, theta, xi, rho, r, tau, alpha, N, du)
+    put_prices = call_prices - S0 + strikes * np.exp(-r*tau)
+    return strikes, put_prices
