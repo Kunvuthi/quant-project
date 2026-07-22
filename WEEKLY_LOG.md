@@ -398,7 +398,7 @@ A running record of work completed each day as documentation.
   W3. Dupire validated on synthetic ground truth only; real-data smoothing deferred to
   where Heston lives longest (W4-W6) and calibration needs a clean target surface.
 
-## Week 4 (Jul 2 - Jul 8): Dupire Local Volatility
+## Week 4 (Jul 2 - Jul 8): Heston
 
 ### Day 16 - Thu Jul 2
 - Branch `feature/week-04-heston` created off `main` (v0.3-week3)
@@ -546,6 +546,167 @@ A running record of work completed each day as documentation.
 - **Next**: Week 5, Fourier pricing (Carr-Madan, COS), building directly on
   today's $\phi(u;\tau)$, new notebook `09_fourier_pricing.ipynb`
 
+
+## Week 5 (Jul 9 - Jul 22): Fourier Pricing
+
+### Day 21 - Thu Jul 9
+- Week 4 (Heston) merged --no-ff into main, tagged v0.4-week4
+- Week 5 (Fourier pricing) started. `heston_char_func` implemented in
+  `models/heston.py`, using the branch-safe Riccati root (Albrecher et al. 2007,
+  "The Little Heston Trap") rather than the naive Heston (1993) form, which
+  produces a discontinuous complex log for long maturities/high vol-of-vol.
+  Sign flip in the definition of `g` is the entire fix, everything else identical
+  to the derivation from Day 20
+  - Cross-domain note: Riccati equation naming connects directly to LQR/Kalman
+    covariance propagation from control theory, same quadratic-in-the-unknown
+    backward-in-time structure, both arising from a linear-quadratic cost/variance
+    object propagated via Feynman-Kac-adjacent machinery
+- COS method theory covered conceptually: truncate density to $[a,b]$, cosine-series
+  coefficients $A_k$ recoverable directly from $\phi(u_k)$ (no numerical
+  integration), price collapses to a finite sum $\sum A_k V_k$ against payoff
+  cosine coefficients $V_k$. Implementation (choosing $[a,b]$ from cumulants,
+  deriving $V_k$ for a call, assembly + MC cross-validation) deferred to next
+  session
+- **Schedule change**: Jul 13-19 off (graduation ceremony + holiday). Week 5
+  continues tomorrow (early start planned), remainder resumes after the break,
+  downstream weeks (6-9) shift accordingly, no fixed date target for now
+
+### Day 22 - Fri Jul 10
+- **`heston_char_func` validated** against two independent checks before building on it:
+  - `phi(u=0)=1` exactly, for any tau (trivial but effective boundary sanity check)
+  - Cross-checked against Week 4's Monte Carlo simulator directly:
+    `mean(exp(iu*ln(S_T)))` over simulated paths vs `heston_char_func(u,...)`,
+    tolerance derived from the bound Var(unit-modulus RV) <= 1, giving
+    SE <= 1/sqrt(N), checked at 3 SE (~6.7e-3 at N=200k). Both passed
+- **COS method implemented end to end** in `pricing/fourier.py`:
+  - `heston_cumulants` (c1, c2, closed form, Fang & Oosterlee), validated against
+    the xi->0, v0=theta limit collapsing exactly onto BSM's known mean and variance
+    of ln(S_T), both c1 and c2 checked independently
+  - `cos_truncation_range` (a, b from cumulants, c4=0 simplification)
+  - `cos_call_coefficients` (V_k, payoff cosine coefficients, reference formula)
+  - `cos_call_price` assembling A_k, V_k, and the k=0 half-weight into the final sum
+- **Bug found and fixed**: COS price (4.75) disagreed sharply with an independent
+  direct Fourier-inversion cross-check (6.84, matching MC's 6.83) built specifically
+  to isolate whether the char function or the COS assembly was at fault, confirmed
+  char function was fine. Diagnosed via an L-sweep (price should stabilize once the
+  truncation range is wide enough; instead it kept halving as L doubled), a
+  dimensional tell rather than a one-off wrong number. Root cause: `A_k` and `V_k`
+  each independently carried a `2/(b-a)` normalization factor, but only `A_k`
+  (the density's cosine coefficient) should carry it; `V_k` is a plain payoff
+  integral against a raw cosine and picked up a spurious second copy. Removed the
+  factor from `cos_call_coefficients`, confirmed price stabilizes across L after
+  the fix
+- **`test_cos_call_price_vs_monte_carlo`** passing, tolerance from the MC sample's
+  own empirical standard error (not a guessed constant)
+- **Week 5 status at the break**: characteristic function + COS method fully
+  implemented and validated end to end. Carr-Madan and the convergence-rate
+  validation suite (COS accuracy vs N, vs MC, across strikes) deferred to after
+  the break
+- **Break starts now**: Jul 13-19 off (graduation ceremony + holiday). Resume
+  Week 5 wrap-up (Carr-Madan, convergence checks) whenever back, no fixed date
+
+### Day 23 - Mon Jul 20
+- Back from the Jul 13-19 break, resumed Week 5
+- **COS convergence-rate validation**: rather than using MC as the reference
+  (its own irreducible ~1/sqrt(N) noise floor would swamp COS's much smaller
+  error at moderate N), used a high-N (2048) COS price as a converged reference
+  instead, standard technique when no independent closed form exists but a
+  method is known to converge. Confirmed exponential convergence (error dropped
+  ~6 orders of magnitude from N=8 to N=64 on a semilog(error) vs N plot, straight
+  line as spectral-accuracy theory predicts), flattening near ~1e-13 once both
+  sides hit floating-point noise
+- **Refactored `cos_call_price`** to separate the strike-independent `A_k`
+  (density coefficients, needs `heston_char_func`) from the cheap per-strike
+  `V_k`, added `cos_density_coefficients` and `cos_smile` for batched strike-strip
+  pricing without recomputing `A_k` per strike, same pattern as Day 18's
+  `cir_qe_regime_params` factoring
+- **Added native put pricing**: `cos_put_coefficients`, derived independently
+  (not via parity) specifically so it serves as a real cross-check on the call
+  path rather than a guaranteed-to-agree algebraic restatement of a potential bug
+- **Two real bugs caught by the new test suite** (`test_fourier.py`):
+  1. The `A_k`/`V_k` double-`2/(b-a)` normalization regression (from Day 22-23)
+     briefly reappeared during the refactor, caught immediately by
+     `test_cos_call_price_vs_monte_carlo` reproducing the exact old wrong price
+  2. `cos_put_coefficients` had two compounding transcription errors: `K`
+     multiplying the wrong building block (`chi` instead of `psi`) and an overall
+     sign flip, `chi - K*psi` where the derivation needs `K*psi - chi`. Root
+     cause worth remembering: the put isn't just the call's formula over
+     different bounds, the payoffs are algebraic negatives of each other
+     ($K-e^x=-(e^x-K)$), so the whole expression's sign structure needs
+     re-deriving, not just the integration bounds swapped. Caught via
+     `test_cos_put_vs_parity` and confirmed step by step with direct numerical
+     checks against the parity target until the sign landed correctly
+  3. `cos_smile`'s `np.empty_like(strikes)` silently inherited int64 dtype when
+     given integer strikes, truncating prices; fixed to
+     `np.empty(len(strikes), dtype=float)`, regression-guarded by
+     `test_cos_smile_dtype_safety`
+- Removed duplicate `test_cos_call_price_vs_monte_carlo` left in `test_heston.py`
+  after moving it to `test_fourier.py`
+- **35 tests passing.** Full COS pricer (calls, puts, batched smile) validated:
+  convergence rate, MC cross-check, put-call parity, dtype safety
+- Full smile plotted in `09_fourier_pricing.ipynb`: COS vs MC, same shape, COS
+  smooth/instant, MC visibly noisier at the same strikes
+- **Week 5 core methods done.** Carr-Madan still open (lower priority now that
+  COS is fully validated and will likely be the production method going forward);
+  next up whenever picked up: Carr-Madan implementation, or move straight to
+  Week 6 (calibration) if Carr-Madan is deprioritized entirely
+
+### Day 24 - Tue Jul 21
+- **Carr-Madan method derived and implemented**, `pricing/carr_madan.py`
+  - Derivation: raw call price $C(k)$ doesn't decay as $k\to-\infty$ (approaches
+    $S_0$, a constant), so it isn't Fourier-transformable as-is. Damping factor
+    $e^{\alpha k}$ ($\alpha>0$) forces left-tail decay, constrained from above by
+    not overpowering the right tail's already-existing decay, formal constraint
+    $E[S_T^{\alpha+1}]<\infty$, $\alpha=1.5$ used as the standard practical default
+  - Damped transform $\psi(u)$ derived, evaluates the existing `heston_char_func`
+    at a shifted complex argument $u-(\alpha+1)i$, no new characteristic-function
+    code needed
+  - DFT sampling identity derived from first principles (matching
+    `np.fft.fft`'s exponent against the integral's kernel term by term):
+    $\Delta u\cdot\Delta k=2\pi/N$, frequency-grid and strike-grid spacing are not
+    independent choices, a genuine resolution/accuracy trade-off, not a free
+    parameter each
+  - Implementation: grid construction (u, dk, k, strikes) written independently
+    from the derived identity; Simpson's rule weights, the $k_0$ phase-shift
+    correction, and damping removal taken as scaffolded reference (standard
+    implementation mechanics of the method, not something to re-derive)
+  - **Correct on first full run**, no debugging needed this time, validated
+    directly against COS across a strike spread (K=80 to 116), agreement to 5
+    decimal places
+  - `test_carr_madan_vs_cos` added, looser tolerance (1e-2) than COS's internal
+    convergence checks, appropriate given Carr-Madan's real FFT/Simpson
+    truncation error vs COS's exponential convergence
+  - Theory write-up drafted for `09_fourier_pricing.ipynb` (not yet pasted in)
+
+### Day 25 - Wed Jul 22
+- **Carr-Madan puts added** via put-call parity from the already-validated call
+  strip. Deliberate choice over a native derivation (unlike COS's put), since
+  Carr-Madan's call side was already cross-validated against COS, a native put
+  would mostly re-confirm already-confirmed machinery rather than add signal
+- `test_carr_madan_put_vs_cos_put`: parity-derived CM put vs COS's natively-derived
+  put, two structurally independent paths, genuine cross-validation rather than
+  parity checking itself. Passed
+- Notebook demo cell: Carr-Madan (FFT) vs COS smile overlay, `np.interp` used to
+  map Carr-Madan's fixed FFT strike grid onto the chosen comparison strikes,
+  standard practice for consuming Carr-Madan output, not a workaround
+- Lessons-learned write-up completed in `09_fourier_pricing.ipynb`: damping
+  factor constraint, DFT sampling identity, the parity-vs-native put reasoning,
+  and a practical COS-vs-Carr-Madan takeaway
+- Extended Carr-Madan vs COS comparison beyond the IV overlay (indistinguishable
+  at plotting scale): raw price error vs strike, and a second N-sweep isolating
+  quadrature from grid resolution. Found a grid-alignment artifact at K=100 and
+  a genuine two-error-source bottleneck in Carr-Madan (quadrature vs interpolation
+  grid, linked by the sampling identity). Full reasoning and plots in
+  `09_fourier_pricing.ipynb`
+- Full test suite reconfirmed green before merge
+- **Week 5 (Fourier pricing) closed.** heston_char_func (branch-safe), COS
+  (calls, puts, batched smile, convergence validated), Carr-Madan (FFT calls,
+  parity puts), all cross-validated against each other and against Week 4's MC.
+  Three independent pricing routes agreeing on the same smile
+- Branch `feature/week-05-fourier` ready to merge --no-ff, tag v0.5-week5
+- **Next**: Week 6, Heston + SABR calibration, SVI smile smoothing (deferred
+  since W1/W3)
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
@@ -554,6 +715,7 @@ A running record of work completed each day as documentation.
 - All Day 6–10 work pushed to `feature/week-02-bsm` branch on GitHub
 - All Day 11–15 work pushed to `feature/week-03-dupire` branch on GitHub
 - All Day 16–20 work pushed to `feature/week-04-heston` branch on GitHub
+- All Day 21–25 work pushed to `feature/week-05-fourier-pricing` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - SVI smile smoothing: flagged for W3 but deliberately NOT done. Rationale: Dupire got
   one week and was validated on synthetic ground truth (clean surfaces) - that taught the

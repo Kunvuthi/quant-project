@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
-from models.heston import sample_cir_qe_step, simulate_heston_paths, cir_qe_regime_params
+from models.heston import sample_cir_qe_step, simulate_heston_paths, cir_qe_regime_params, heston_char_func
+from pricing.fourier import heston_cumulants, cos_call_price
 
 
 @pytest.fixture
@@ -112,3 +113,77 @@ def test_qe_regime2_zero_fraction():
     se = np.sqrt(expected_p * (1 - expected_p) / n_paths)
 
     assert abs(empirical_zero_frac - expected_p) < 4 * se
+
+# --------- Characteristic Function Tests -------------#
+
+def test_heston_char_func_long_maturity_stability():
+    """
+    Regression guard against the 'Little Heston Trap' (Albrecher et al. 2007):
+    the naive Riccati root produces a discontinuous complex log for long
+    maturities, this checks phi is smooth (no jump) across a fine tau grid
+    at parameters known to trigger the naive-formula discontinuity.
+    """
+    S0, v0 = 100.0, 0.04
+    kappa, theta, xi, rho, r = 1.5, 0.04, 0.9, -0.7, 0.05  # high xi, long horizon stresses this
+    u_test = 5.0  # a single, moderately large u also stresses this more than u near 0
+
+    taus = np.linspace(0.1, 10.0, 200)
+    phi_vals = np.array([heston_char_func(u_test, S0, v0, kappa, theta, xi, rho, r, tau)
+                          for tau in taus])
+
+    # phi should vary smoothly; a branch-cut jump shows up as an abrupt
+    # discontinuity in |phi| or its phase between adjacent tau values
+    jumps = np.abs(np.diff(phi_vals))
+    assert jumps.max() < 10 * np.median(jumps), "discontinuity detected, possible branch-cut issue"
+
+    
+def test_heston_char_func_at_zero():
+    """phi(0) = E[1] = 1 for any random variable, trivial but effective sanity check."""
+    S0, v0 = 100.0, 0.04
+    kappa, theta, xi, rho, r = 2.0, 0.04, 0.3, -0.7, 0.05
+    for tau in [0.1, 0.5, 1.0, 2.0, 5.0]:
+        phi_0 = heston_char_func(0.0, S0, v0, kappa, theta, xi, rho, r, tau)
+        assert np.isclose(phi_0, 1.0 + 0j, atol=1e-10)
+
+
+def test_heston_char_func_vs_monte_carlo():
+    """
+    Cross-check heston_char_func against an independent ground truth (Week 4's
+    already-validated MC simulator), rather than only internal smoothness. Tolerance
+    derived from the worst-case bound Var(Re/Im of a unit-modulus RV) <= 1, giving
+    SE <= 1/sqrt(N) per component, checked at 3 SE.
+    """
+    S0, v0 = 100.0, 0.04
+    kappa, theta, xi, rho, r = 2.0, 0.04, 0.3, -0.7, 0.05
+    T, n_steps, n_paths = 0.5, 126, 200_000
+
+    rng = np.random.default_rng(0)
+    S, _ = simulate_heston_paths(S0, v0, kappa, theta, xi, rho, r, T, n_steps, n_paths, rng=rng)
+    S_T = S[:, -1]
+
+    tol = 3 / np.sqrt(n_paths)  # ~6.7e-3 at n_paths=200_000
+
+    for u in [0.5, 1.0, 2.0, -1.5]:
+        phi_mc = np.mean(np.exp(1j * u * np.log(S_T)))
+        phi_exact = heston_char_func(u, S0, v0, kappa, theta, xi, rho, r, T)
+        assert np.abs(phi_mc - phi_exact) < tol, f"mismatch at u={u}: MC={phi_mc}, exact={phi_exact}"
+        
+def test_heston_cumulants_bsm_limit():
+    """
+    xi->0 with v0=theta collapses Heston to constant-vol GBM. c1 should match
+    the known BSM mean of ln(S_T) exactly in this limit.
+    """
+    S0, r, tau = 100.0, 0.05, 1.0
+    theta = 0.04
+    v0 = theta  # no mean-reversion transient
+    kappa = 2.0  # arbitrary, shouldn't matter once v0=theta
+    xi = 1e-8    # numerically zero vol-of-vol, avoid exact 0 for safety in other formulas
+
+    c1, c2 = heston_cumulants(S0, v0, kappa, theta, xi, rho=-0.5, r=r, tau=tau)
+
+    c1_bsm = np.log(S0) + (r - 0.5 * theta) * tau
+    assert np.isclose(c1, c1_bsm, atol=1e-6)
+
+    # bonus check: c2 should collapse to theta*tau (BSM variance of ln(S_T))
+    c2_bsm = theta * tau
+    assert np.isclose(c2, c2_bsm, atol=1e-4)
