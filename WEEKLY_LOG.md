@@ -677,12 +677,35 @@ A running record of work completed each day as documentation.
     convergence checks, appropriate given Carr-Madan's real FFT/Simpson
     truncation error vs COS's exponential convergence
   - Theory write-up drafted for `09_fourier_pricing.ipynb` (not yet pasted in)
-- **Still open for tomorrow before Week 5 closes**:
-  - Native put pricing for Carr-Madan (currently calls-only)
-  - Notebook demo cell: Carr-Madan smile, likely a three-way overlay against
-    COS and MC for a clean capstone visual
-  - Final wrap-up, merge/tag, and handover prep for a fresh chat session
-    starting Week 6
+
+### Day 25 - Wed Jul 22
+- **Carr-Madan puts added** via put-call parity from the already-validated call
+  strip. Deliberate choice over a native derivation (unlike COS's put), since
+  Carr-Madan's call side was already cross-validated against COS, a native put
+  would mostly re-confirm already-confirmed machinery rather than add signal
+- `test_carr_madan_put_vs_cos_put`: parity-derived CM put vs COS's natively-derived
+  put, two structurally independent paths, genuine cross-validation rather than
+  parity checking itself. Passed
+- Notebook demo cell: Carr-Madan (FFT) vs COS smile overlay, `np.interp` used to
+  map Carr-Madan's fixed FFT strike grid onto the chosen comparison strikes,
+  standard practice for consuming Carr-Madan output, not a workaround
+- Lessons-learned write-up completed in `09_fourier_pricing.ipynb`: damping
+  factor constraint, DFT sampling identity, the parity-vs-native put reasoning,
+  and a practical COS-vs-Carr-Madan takeaway
+- Extended Carr-Madan vs COS comparison beyond the IV overlay (indistinguishable
+  at plotting scale): raw price error vs strike, and a second N-sweep isolating
+  quadrature from grid resolution. Found a grid-alignment artifact at K=100 and
+  a genuine two-error-source bottleneck in Carr-Madan (quadrature vs interpolation
+  grid, linked by the sampling identity). Full reasoning and plots in
+  `09_fourier_pricing.ipynb`
+- Full test suite reconfirmed green before merge
+- **Week 5 (Fourier pricing) closed.** heston_char_func (branch-safe), COS
+  (calls, puts, batched smile, convergence validated), Carr-Madan (FFT calls,
+  parity puts), all cross-validated against each other and against Week 4's MC.
+  Three independent pricing routes agreeing on the same smile
+- Branch `feature/week-05-fourier` ready to merge --no-ff, tag v0.5-week5
+- **Next**: Week 6, Heston + SABR calibration, SVI smile smoothing (deferred
+  since W1/W3)
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
