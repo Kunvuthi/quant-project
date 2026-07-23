@@ -707,6 +707,153 @@ A running record of work completed each day as documentation.
 - **Next**: Week 6, Heston + SABR calibration, SVI smile smoothing (deferred
   since W1/W3)
 
+## Week 6 (Jul 23-29): Calibration (SVI, Heston + SABR)
+
+### Day 26 - Thu Jul 23
+- Started Week 6, branch `feature/week-06-calibration`, new module
+  `calibration/svi.py`. Theory and scaffolding day, no fitting run yet
+- **Raw SVI parametrization** in total implied variance against log-moneyness
+  $k=\log(K/F)$: $w(k)=a+b\left(\rho(k-m)+\sqrt{(k-m)^2+\sigma^2}\right)$
+  - Total variance not implied vol, because calendar arbitrage reduces to
+    $\partial_T w \ge 0$, plain monotonicity; the same condition in vol space
+    is uglier and easy to get wrong
+  - Log-moneyness against the forward, not spot, so slices are
+    maturity-comparable and centred on ATMF; parity-implied forward already
+    canonical from W1
+  - SVI is Stochastic Volatility *Inspired*, no SDE underneath. Static
+    parametrization with no dynamics, so it is the clean arbitrage-free target
+    Heston and SABR calibrate *against*, not a model in its own right
+- **Vertex identities** at $k=m$: $w=a+b\sigma$, $w'=b\rho$, $w''=b/\sigma$
+  - These are also the three observable combinations near the money (level,
+    slope, curvature), which is exactly why raw SVI is badly identified:
+    $\{a,b,\sigma\}$ collapse onto two of them, and $\rho$ only separates from
+    $b$ once the wings pin $b$ down. On thin noisy CBOE wings, $b$ goes soft
+- **Zeliade two-stage reduction** adopted for this reason. Substituting
+  $y=(k-m)/\sigma$, $c=b\sigma$, $d=\rho b\sigma$ gives $w=a+dy+c\sqrt{y^2+1}$,
+  linear in $(a,d,c)$ for fixed $(m,\sigma)$
+  - Inner problem: constrained linear least squares, cheap and reliable
+  - Outer problem: 2D Nelder-Mead over $(m,\sigma)$ only, the two geometrically
+    interpretable parameters. Five correlated dimensions down to two
+  - Recovery $b=c/\sigma$, $\rho=d/c$
+- **Lee wing bound derived rather than copied.** As $k\to\infty$, $w\sim\beta k$
+  with $\beta=b(1+\rho)$, so $g(\infty)=1/4-\beta^2/16$ and $g\ge 0$ forces
+  $\beta\le 2$ in total-variance units
+  - Claude initially quoted 4 from memory; that is either the two-wing sum form
+    or a slack box constraint. Published constants here differ by convention
+    (total variance vs vol, per-wing vs summed) and a wrong factor silently
+    lets long-dated slices fit steeper wings than any martingale supports
+  - Same lesson as the COS normalization: derive in your own convention
+- **Durrleman condition**: butterfly arbitrage is exactly $g(k)<0$, since the
+  rest of the density $\frac{1}{\sqrt{2\pi w}}e^{-d_2^2/2}$ is strictly positive
+  - $g=\left(1-\frac{kw'}{2w}\right)^2-\frac{w'^2}{4}\left(\frac1w+\frac14\right)+\frac{w''}{2}$
+  - $w''>0$ always for raw SVI, so only the middle term can drive $g$ negative
+  - Splitting it is the useful bit: the $-w'^2/16$ piece is asymptotic and just
+    reproduces Lee, while $-w'^2/(4w)$ is the *practical* failure mode. It blows
+    up where $w$ is small and $w'$ steep, i.e. **short-dated slices on the steep
+    put wing, not the far wing**
+  - Consequences: fit shortest maturities first (failures surface before a whole
+    surface is built on top), and make the $g$ grid densest near the money
+- Analytic $g$ from analytic $w,w',w''$, never numerical second differences of a
+  priced call strip. Same reasoning as W3's nested-`np.gradient` sawtooth
+
+#### Design decisions
+- **Butterfly penalty lives in the outer objective**, squared hinge
+  $\lambda\sum\max(0,-g(k_i))^2$, so the inner solve stays linear. $g\ge 0$ is
+  emphatically not linear in $(a,d,c)$ and putting it inside would destroy the
+  reason for the reduction
+  - Accepted cost: the composite is inconsistent, inner minimizes pure RMSE
+    while outer sees RMSE plus penalty. Documented, not swept under
+  - **Not regularization.** Ridge expresses a preference; this is a hard
+    admissibility condition. A slice with $g<0$ is not a worse fit, it is not a
+    density. So $\lambda$ is not cross-validated, it is ramped until violations
+    vanish and the accepted fit is gated on $g\ge0$ directly, pass/fail
+  - Continuation strategy: fit unpenalized first ($\lambda=0$), gate, only refit
+    with ramped $\lambda$ warm-started from that solution if the gate fails.
+    Most slices should cost nothing
+- **Penalty grid fixed in $k$-space** across outer iterations, not regenerated
+  per candidate. A moving grid makes the penalty jump as violation dips fall
+  between sample points, and Nelder-Mead reads those jumps as real structure.
+  Resolution handles the real concern instead, with the accepted fit
+  re-verified on a much denser grid afterwards
+- **One quote per strike** by the OTM convention (puts $k<0$, calls $k\ge0$),
+  never blended. The ITM leg is the illiquid one. Also, since the forward is
+  parity-implied, call/put IV disagreement at other strikes signals the forward
+  is slightly off at that strike, not two independent measurements to average.
+  Log it as a diagnostic instead
+- **Weights frozen from raw market IVs**, never updated inside the optimizer
+  - Updating breaks inner linearity ($W$ would depend on $(a,d,c)$)
+  - Worse, it opens a degenerate direction: $W_{ii}$ falls as fitted vol rises,
+    so the objective can be reduced by *inflating* $w$ without fitting anything
+    better. The correct likelihood carries a $\sum\log\sigma_i(\theta)$ term
+    that penalizes exactly this, and dropping it is what opens the hole. Same
+    reason a learned noise scale cannot be treated as fixed in PyMC
+  - IRLS is the honest version if self-consistency is ever wanted
+  - Weight construction: spread $\to$ vol via vega, vol $\to$ total variance via
+    $2\sigma_{BS}\tau$. Reintroduces vega, so low-vega strikes are down-weighted
+    automatically, consistent with the W4-W5 conditioning thread
+
+#### Written
+- `svi_raw`, `svi_raw_first`, `svi_raw_second`, `reduced_design_matrix`,
+  `reduced_constraints` done; `solve_inner` nearly done
+
+#### Bugs caught in review
+1. **Sign error in the radicand**, $(k-m)^2-\sigma^2$ instead of $+$, in all
+   three of `svi_raw` and both derivatives. Nasty failure mode: NaN only when
+   $|k-m|<\sigma$, a hole centred exactly on the vertex, finite and plausible
+   everywhere else, so a wing-only test passes clean. Loud where you look least
+2. `raise dw` / `raise d2w` instead of `return`, from editing the
+   `raise NotImplementedError` line rather than replacing it
+3. `reduced_design_matrix` built with `np.array([...])` giving shape $(3,n)$
+   instead of $(n,3)$. Silently square and wrong at exactly 3 strikes, and
+   otherwise the shape error surfaces layers away in the outer objective. Fixed
+   with `np.column_stack`
+4. `np.linalg.lstsq(A, ub)` as the SLSQP start: least-squares fitting the
+   *constraint* rows, which contain no market data at all. Lands on boundaries
+   and knows nothing about the slice. Wanted `lstsq(Xw, ww)`, the unconstrained
+   fit to the data
+5. `Warning.add_note` on the class: silent no-op with nothing raising it, which
+   was the exact failure the line was meant to prevent
+
+#### Good call worth keeping
+- Put $\sigma$ in `ub` (as $2\sigma$) rather than $1/\sigma$ in `A` for the Lee
+  rows. Legal since $\sigma>0$, keeps `A` as pure $\pm1$ entries, and degrades
+  gracefully as $\sigma$ shrinks instead of blowing up the coefficient matrix
+  exactly where the vertex is sharpest
+- Falls out of that: as $\sigma\to0$ the Lee rows force $c=d=0$, so with $c\ge0$
+  the feasible set **collapses to a single point** (a flat slice). The outer
+  search therefore needs a hard lower bound on $\sigma$ (~1e-3), and should log
+  when the optimizer sits on it, since that signals the data wants a kink raw
+  SVI cannot deliver
+- `tau` now confirmed unused in `reduced_constraints` since everything is in
+  total variance; drop from the signature or comment why it stays
+
+#### Open for tomorrow
+- Finish `solve_inner`: two-stage branch (unconstrained `lstsq`, feasibility
+  check `np.all(A @ x <= ub)`, SLSQP only on failure). Decide strict `<= ub` vs
+  `+ tol`, a choice coupled to the clip in `recover_raw`. Log *which*
+  constraint row failed, not just that one did
+- Failure-path signature: leaning towards a flag over raise or warn, with
+  `outer_objective` returning `np.inf` for a candidate whose inner solve failed,
+  so the search walks away rather than accepting a garbage fit. Raising is wrong
+  inside a loop called thousands of times
+- `recover_raw` guards: degenerate $c$ ($\rho$ genuinely undefined at $b=0$,
+  pick and document a convention rather than letting 1e-14 decide the skew) and
+  $\rho$ overshooting 1 by tolerance (kills $\sqrt{1-\rho^2}$ downstream). Both
+  tolerance-boundary bugs, same family as the COS normalization
+- `durrleman_g` plus validation gates, ground-truth-first as usual:
+  - FD convergence-rate check on both derivatives (slope 2, stopping the $h$
+    sweep before the roundoff floor at $h\sim\epsilon^{1/3}$, $\epsilon^{1/4}$)
+  - Evaluated at the vertex $k=m$ (exact closed forms, no discretization error
+    to hide behind) and at $m\pm\sigma$, $m\pm10\sigma$ for the crossover and
+    asymptotic regimes, both signs to catch a $\rho$ flip
+  - Test params all distinct and none equal to 1, else $b/\sigma$ and $b\sigma$
+    are indistinguishable and a swapped $b,\sigma$ passes. Using
+    $(a,b,\rho,m,\sigma)=(0.04,0.4,-0.3,-0.05,0.15)$
+  - Flat vol must give $g\equiv1$ and reproduce the lognormal exactly; density
+    integrates to 1; $b$ broken past the Lee bound must make $g$ go negative
+    (a checker that never fires is not a checker)
+- Then `outer_objective`, `fit_slice`, and first fit against real CBOE slices
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
@@ -717,12 +864,6 @@ A running record of work completed each day as documentation.
 - All Day 16–20 work pushed to `feature/week-04-heston` branch on GitHub
 - All Day 21–25 work pushed to `feature/week-05-fourier-pricing` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
-- SVI smile smoothing: flagged for W3 but deliberately NOT done. Rationale: Dupire got
-  one week and was validated on synthetic ground truth (clean surfaces) - that taught the
-  mechanism and motivation, which is the high-value learning. SVI is real-data plumbing,
-  not modelling, so it was deferred to W6 (Heston + SABR calibration), where Heston lives
-  longest (recurs W4-W6) and calibration genuinely NEEDS a clean arbitrage-free target
-  surface. Effort compounds there rather than being spent on Dupire's single week.
 - **Phase 3 note**: adopt QuantLib (conda-forge `quantlib`) as the production pricing
   reference - cross-validate own pricers against it, and lean on it for the pricing layer
   in backtesting so own code focuses on portfolio/strategy logic. Build-to-learn now,
