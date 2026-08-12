@@ -756,6 +756,58 @@ A running record of work completed each day as documentation.
 - Analytic $g$ from analytic $w,w',w''$, never numerical second differences of a
   priced call strip. Same reasoning as W3's nested-`np.gradient` sawtooth
 
+### Day 27 - Tue Aug 12
+- Back after a ~3 week break. Reconciliation plus one new function, `durrleman_g`
+- **Reconciled `svi.py` against the log.** The three W6D1 fixes had landed
+  (radicand +sigma^2 in all three derivative funcs, `return` not `raise`,
+  `column_stack`), but a fresh read caught four new fill-in slips:
+  1. `np.ones_like(len(k))` - `len(k)` is a scalar so this returned a single 1,
+     not a column. Fixed to `ones_like(k)`
+  2. `reduced_constraints(sigma, tau)` called with two args after `tau` was
+     dropped from the signature - instant TypeError. Fixed
+  3. `recover_raw` returned a bare `(b, rho)` tuple, silently dropping a, m,
+     sigma. Rewritten to full `SVIParams` with both guards: degenerate-c floor
+     (1e-12, rho=0 for the flat-slice case where rho is genuinely undefined) and
+     rho clip to [-1, 1] (SLSQP satisfies |d|<=c only to tolerance, overshoot
+     kills sqrt(1-rho^2) downstream)
+  4. Dropped vestigial `tau` from `solve_inner`
+  - 1 and 3 were silent, the dangerous ones
+- **`solve_inner` two-stage branch completed**: unconstrained `lstsq`,
+  feasibility check, SLSQP only on failure warm-started from the lstsq point
+- **`durrleman_g` written and certified.** g = (1 - k w'/(2w))^2
+  - w'^2/4 (1/w + 1/4) + w''/2, each of w, w', w'' evaluated once
+- **Wrote `tests/test_svi.py`, 12 tests, all green:**
+  - Vertex identities at k=m against exact closed forms w=a+b*sigma, w'=b*rho,
+    w''=b/sigma, atol 1e-14. Params all-distinct and none equal to 1 so a
+    swapped b/sigma cannot pass by coincidence, plus a meta-test on that
+  - FD consistency: w' vs central diff of w, w'' vs central diff of w', across
+    vertex, crossover (m +/- sigma), wings (m +/- 10 sigma), both signs
+  - Convergence-rate: log-log slope of FD error vs h must be ~2
+  - Structural: w'' > 0 across a wide grid, integer-k dtype safety (W5 lesson)
+  - Durrleman g gates: flat slice (b=0) gives g==1 everywhere (free correctness
+    test, catches a dropped factor or sign error in term one); admissible slice
+    stays g > 0 (no false positives); Lee-bound-violating slice
+    (b(1+|rho|) > 2) drives g < 0 somewhere (a checker that never fires is not
+    a checker)
+- **Convergence-rate debug**: `test_second_derivative_convergence_rate` first
+  read slope ~4, not ~2. Not a wrong derivative (that plateaus at slope 0) but
+  an unlucky eval point (m + 0.5 sigma) where the leading h^2 coefficient
+  ~w'''' is near zero, so h^4 dominates and slope reads high. Moved the sweep
+  near the vertex (m + 0.15 sigma) where higher derivatives are large and
+  generic. Slope back to ~2. Slope-too-high is as diagnostic as too-low
+
+#### Still open
+- `solve_inner` returns `res.x` even on `res.success == False` (just warns).
+  Failure-path decision belongs with `outer_objective` returning inf for a
+  poisoned candidate; not yet wired
+- `reduced_constraints` docstring still references a stale "wrong tau scaling"
+- `svi_density` (belt-and-suspenders density cross-check vs g), then the outer
+  layer (`butterfly_penalty`, `outer_objective`, `fit_slice`), then first real
+  CBOE slice fit
+
+#### Pace note
+Targeting full W6 (SVI fits, Heston calibration, SABR) by Wed next week.
+
 #### Design decisions
 - **Butterfly penalty lives in the outer objective**, squared hinge
   $\lambda\sum\max(0,-g(k_i))^2$, so the inner solve stays linear. $g\ge 0$ is
