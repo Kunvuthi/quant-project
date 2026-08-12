@@ -9,6 +9,8 @@ Calibration uses the Zeliade two-stage reduction: for fixed (m, sigma) the
 substitution y = (k - m) / sigma makes w linear in (a, d, c) where
 d = rho * b * sigma and c = b * sigma, so the inner problem is a constrained
 linear least squares and the outer problem is a 2D search over (m, sigma).
+
+Note: Tau not included as not in formula.
 """
 
 from typing import Callable, Literal, NamedTuple
@@ -80,7 +82,7 @@ def reduced_design_matrix(k: np.ndarray, m: float, sigma: float) -> np.ndarray:
     """
     k = np.asarray(k, dtype=float)
     y = (k-m) / sigma
-    X = np.column_stack([np.ones_like(len(k)), y, np.sqrt(y**2 + 1)])
+    X = np.column_stack([np.ones_like(k), y, np.sqrt(y**2 + 1)])
     return X
 
 
@@ -89,7 +91,7 @@ def reduced_constraints(sigma: float) -> tuple[np.ndarray, np.ndarray]:
 
     Encodes b >= 0, |rho| <= 1, w >= 0 everywhere, and the Lee wing bound.
     Derive these in your own total-variance convention, the published factor
-    differs by convention and a wrong tau scaling fails silently.
+    differs by convention.
     """
     A = np.array([
     [0.0,  0.0, -1.0],   # b >= 0            ->  -c <= 0
@@ -108,7 +110,6 @@ def solve_inner(
     w_market: np.ndarray,
     m: float,
     sigma: float,
-    tau: float,
     weights: np.ndarray | None = None,
 ) -> tuple[float, float, float]:
     """Constrained weighted linear least squares for (a, d, c) at fixed (m, sigma).
@@ -136,7 +137,7 @@ def solve_inner(
     def grad(x: np.ndarray) -> np.ndarray:
         return 2.0 * (XtX @ x - Xtw)
 
-    A, ub = reduced_constraints(sigma, tau)
+    A, ub = reduced_constraints(sigma)
 
     x_ls, *_ = np.linalg.lstsq(Xw, ww, rcond=None)
 
@@ -165,9 +166,14 @@ def solve_inner(
 
 def recover_raw(a: float, d: float, c: float, m: float, sigma: float) -> SVIParams:
     """Map reduced parameters back to raw SVI: b = c / sigma, rho = d / c."""
+    c_floor = 1e-12
+    if c < c_floor:
+        # flat slice, rho undefined; documented convention rho = 0
+        return SVIParams(a=float(a), b=0.0, rho=0.0, m=float(m), sigma=float(sigma))
+    
     b = c / sigma
-    rho = d / c
-    return float(b), float(rho)
+    rho = float(np.clip(d / c, -1.0, 1.0))
+    return SVIParams(a=a, b=b, rho=rho, m=m, sigma=sigma)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +187,13 @@ def durrleman_g(k: np.ndarray, params: SVIParams) -> np.ndarray:
     Built from w, w' and w'' analytically, never from numerical differences of
     a priced call strip.
     """
-    raise NotImplementedError
+    k = np.asarray(k, dtype=float)
+    w = svi_raw(k, params)
+    w1 = svi_raw_first(k, params)
+    w2 = svi_raw_second(k, params)
+    g = (1 - k*w1/(2*w))**2 - (w1**2 / 4)*(1/w + 1/4) + w2/2
+    return g
+    
 
 
 def svi_density(k: np.ndarray, params: SVIParams, tau: float) -> np.ndarray:
