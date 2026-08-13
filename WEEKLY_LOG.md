@@ -1,4 +1,4 @@
-# Weekly Log
+# Weekly Log (Year - 2026)
 
 A running record of work completed each day as documentation.
 
@@ -707,7 +707,7 @@ A running record of work completed each day as documentation.
 - **Next**: Week 6, Heston + SABR calibration, SVI smile smoothing (deferred
   since W1/W3)
 
-## Week 6 (Jul 23-29): Calibration (SVI, Heston + SABR)
+## Week 6 (Jul 23 - Aug 19): Calibration (SVI, Heston + SABR)
 
 ### Day 26 - Thu Jul 23
 - Started Week 6, branch `feature/week-06-calibration`, new module
@@ -756,7 +756,7 @@ A running record of work completed each day as documentation.
 - Analytic $g$ from analytic $w,w',w''$, never numerical second differences of a
   priced call strip. Same reasoning as W3's nested-`np.gradient` sawtooth
 
-### Day 27 - Tue Aug 12
+### Day 27 - Wed Aug 12
 - Back after a ~3 week break. Reconciliation plus one new function, `durrleman_g`
 - **Reconciled `svi.py` against the log.** The three W6D1 fixes had landed
   (radicand +sigma^2 in all three derivative funcs, `return` not `raise`,
@@ -796,17 +796,64 @@ A running record of work completed each day as documentation.
   near the vertex (m + 0.15 sigma) where higher derivatives are large and
   generic. Slope back to ~2. Slope-too-high is as diagnostic as too-low
 
-#### Still open
-- `solve_inner` returns `res.x` even on `res.success == False` (just warns).
-  Failure-path decision belongs with `outer_objective` returning inf for a
-  poisoned candidate; not yet wired
-- `reduced_constraints` docstring still references a stale "wrong tau scaling"
-- `svi_density` (belt-and-suspenders density cross-check vs g), then the outer
-  layer (`butterfly_penalty`, `outer_objective`, `fit_slice`), then first real
-  CBOE slice fit
+### Day 28 - Thur Aug 13
+- Closed out the SVI module (bar the real-data bridge) and scaffolded the
+  teaching notebook. Outer layer from yesterday now has its final gate
+- **`verify_fit` written**: post-acceptance arbitrage gate on a much denser
+  grid (20k points) than the optimizer used, since g can dip negative between
+  the optimizer's coarser grid points, worst near the vertex where w'' peaks.
+  Checks two regions separately and returns (clean_on_data, clean_on_extrap,
+  min_g):
+  - data range: a violation here means the fit is arbitrageable where we have
+    quotes, a real failure
+  - extrapolation range (|k| out to 2): a violation here means the wings are
+    unusable, which matters because Heston and Dupire reach out there
+  - min_g returned unclamped: positive tells the safety margin, negative the
+    depth of the worst dip, both useful
+  - used a -1e-12 tolerance on the >= 0 check rather than strict, so a fit
+    numerically grazing g=0 does not read as a violation. Same
+    tolerance-boundary judgment as the recover_raw guards
+  - fixed the usual builtin-`min` habit (np.min), and wrapped the bool returns
+    in bool() so the tuple[bool, bool, float] annotation is truthful, not
+    np.bool_
+- **SVI module now complete for a first real fit**: derivatives, solve_inner,
+  recover_raw, durrleman_g, butterfly_penalty, outer_objective, fit_slice,
+  verify_fit all done and consistent. Still deferred (refinements, not
+  blockers): continuation lam-ramping, svi_density, and the surface level
+  (fit_surface + calendar check)
+- **Scaffolded `10_svi_fit.ipynb`** as a teaching notebook for retrospective
+  reading, structured to build the ideas in the order they land rather than
+  the order the code was written:
+  1. the problem (noisy quotes to usable surface, the three reasons: denoise,
+     no-arbitrage, continuity)
+  2. the parametrization (five params and their geometry, linear asymptotes =
+     Lee, SVI is Inspired with no SDE underneath)
+  3. why total variance (calendar arbitrage = monotonicity in tau)
+  4. arbitrage within a slice and g (only the middle term goes negative, short
+     put wing, asymptote recovers Lee's bound)
+  5. the two-stage reduction (identifiability, Zeliade, nested loops)
+  6. validation, ground-truth-first
+  7. real CBOE data, stubbed for tomorrow
+  - markdown cells written out in full (the teaching prose is the point), code
+    cells stubbed with what each should plot. No code or plots yet, that is
+    tomorrow's work
+
+#### Tomorrow
+- Fill the notebook code cells against synthetic data: jagged-vs-clean smile,
+  the five-parameter sweep, g firing on a Lee-violating slice vs staying
+  positive on a clean one, the identifiability near-degeneracy, the
+  ground-truth recovery demo
+- Then the real-data bridge (section 7): CBOE chain -> clean (k, w). This is
+  the actual remaining module work and where real data bites: OTM convention,
+  parity-implied forward as canonical spot, quotes to total variance, weights
+  from bid-ask spreads
+- First real CBOE slice fits, each gated with verify_fit
+- If time: SABR, or the surface level (fit_surface shortest-maturity-first +
+  calendar check)
 
 #### Pace note
-Targeting full W6 (SVI fits, Heston calibration, SABR) by Wed next week.
+On track for full W6 by Wed next week. Module machinery done and certified,
+remaining bulk is real-data plumbing plus the second model (SABR/Heston)
 
 #### Design decisions
 - **Butterfly penalty lives in the outer objective**, squared hinge
