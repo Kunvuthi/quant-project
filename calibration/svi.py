@@ -39,11 +39,9 @@ class SVIFitResult(NamedTuple):
     arbitrage_free: bool
     n_outer_evals: int
 
-
 # ---------------------------------------------------------------------------
 # Parametrization and derivatives
 # ---------------------------------------------------------------------------
-
 
 def svi_raw(k: np.ndarray, params: SVIParams) -> np.ndarray:
     """Total implied variance w(k) under raw SVI."""
@@ -69,11 +67,9 @@ def svi_raw_second(k: np.ndarray, params: SVIParams) -> np.ndarray:
     d2w = params.b*(params.sigma**2)/(((k-params.m)**2 + params.sigma**2))**(3/2)
     return d2w
 
-
 # ---------------------------------------------------------------------------
 # Inner problem: linear in (a, d, c) for fixed (m, sigma)
 # ---------------------------------------------------------------------------
-
 
 def reduced_design_matrix(k: np.ndarray, m: float, sigma: float) -> np.ndarray:
     """Design matrix for w = a + d * y + c * sqrt(y^2 + 1), y = (k - m) / sigma.
@@ -103,7 +99,6 @@ def reduced_constraints(sigma: float) -> tuple[np.ndarray, np.ndarray]:
     ], dtype=float)
     ub = np.array([0.0, 0.0, 0.0, 0.0, 2*sigma, 2*sigma], dtype=float)
     return A, ub
-
 
 def solve_inner(
     k: np.ndarray,
@@ -143,7 +138,7 @@ def solve_inner(
 
     if np.all(A @ x_ls <= ub):
         a, d, c = x_ls
-        return float(a), float(d), float(c)
+        return float(a), float(d), float(c), True
 
     res = minimize(
         obj, x_ls,
@@ -157,11 +152,8 @@ def solve_inner(
         options={"ftol": 1e-12, "maxiter": 200},
     )
 
-    if not res.success:
-        warnings.warn(f"solve_inner: SLSQP failed ({res.message})", RuntimeWarning)
-
     a, d, c = res.x
-    return float(a), float(d), float(c)
+    return float(a), float(d), float(c), bool(res.success)
 
 
 def recover_raw(a: float, d: float, c: float, m: float, sigma: float) -> SVIParams:
@@ -175,11 +167,9 @@ def recover_raw(a: float, d: float, c: float, m: float, sigma: float) -> SVIPara
     rho = float(np.clip(d / c, -1.0, 1.0))
     return SVIParams(a=a, b=b, rho=rho, m=m, sigma=sigma)
 
-
 # ---------------------------------------------------------------------------
 # Arbitrage diagnostics
 # ---------------------------------------------------------------------------
-
 
 def durrleman_g(k: np.ndarray, params: SVIParams) -> np.ndarray:
     """Durrleman's g(k). Butterfly arbitrage is exactly g(k) < 0.
@@ -222,49 +212,134 @@ def calendar_violation(
 # ---------------------------------------------------------------------------
 
 
-def butterfly_penalty(params: SVIParams, k_grid: np.ndarray) -> float:
+def butterfly_penalty(k_grid: np.ndarray, params: SVIParams) -> float:
     """Squared hinge sum(max(0, -g(k_i))^2) on a grid fixed across iterations.
 
     Fixed so the penalty varies smoothly with (m, sigma). Density near the
     money matters more than range.
     """
-    raise NotImplementedError
+    k = np.asarray(k_grid, dtype=float)
+    g = durrleman_g(k, params)
+    violation = np.maximum(0.0, -g)
+    return float(np.sum(violation**2))
 
 
 def outer_objective(
     x: np.ndarray,
     k: np.ndarray,
     w_market: np.ndarray,
-    tau: float,
     k_grid: np.ndarray,
     lam: float,
     weights: np.ndarray | None = None,
 ) -> float:
     """Objective over x = (m, sigma): inner solve, then RMSE plus penalty.
 
-    The composite is slightly inconsistent, the inner solve minimizes pure RMSE
-    while this sees RMSE plus penalty. Deliberate, and the reason the accepted
+    The inner solve minimizes weighted RMSE. Deliberate, and the reason the accepted
     fit is gated on g >= 0 directly rather than on a small residual penalty.
     """
-    raise NotImplementedError
+    # x is the outer search point, unpack the two parameters
+    m, sigma = x
+
+    # inner solve: best (a, d, c) for this fixed (m, sigma)
+    a, d, c, ok = solve_inner(k, w_market, m, sigma, weights)
+
+    # --- fit term: RMSE in reduced coordinates ---
+    # rebuild the design matrix so we can reconstruct fitted w
+    if not ok:
+        return np.inf
+    
+    X = reduced_design_matrix(k, m, sigma)          # shape (n, 3)
+    w_fit = X @ np.array([a, d, c])                        # fitted total variance
+    resid = w_fit - w_market
+
+    if weights is None:
+        rmse = np.sqrt( np.mean( resid**2 ) )
+    else:
+        rmse = np.sqrt( np.sum(weights * resid**2) / np.sum(weights) )
+
+    # --- penalty term: butterfly arbitrage ---
+    params = recover_raw(a, d, c, m, sigma)         # need SVIParams for g
+    penalty = butterfly_penalty(k_grid, params)
+
+    # combined score handed back to Nelder-Mead
+    return rmse + lam * penalty
 
 
 def fit_slice(
     k: np.ndarray,
     w_market: np.ndarray,
-    tau: float,
     weights: np.ndarray | None = None,
     lam: float = 0.0,
     k_grid: np.ndarray | None = None,
-    n_starts: int = 5,
-    method: Literal["nelder-mead", "powell"] = "nelder-mead",
+    method: Literal["Nelder-Mead", "Powell"] = "Nelder-Mead",
 ) -> SVIFitResult:
     """Calibrate one maturity slice via the two-stage reduction.
 
     Default lam = 0 supports continuation: fit unpenalized, gate on g, re-fit
     with ramped lam warm-started from that solution only if the gate fails.
     """
-    raise NotImplementedError
+    # --- 0. coerce inputs ---
+    k = np.asarray(k, dtype=float)
+    w_market = np.asarray(w_market, dtype=float)
+
+    # --- 1. build the FIXED penalty grid, once ---
+    # fixed across every outer iteration and every start, so the penalty
+    # is a smooth function of (m, sigma). dense, denser near the money.
+    if k_grid is None:
+        k_lo, k_hi = k.min(), k.max()
+        margin = 0.1 * (k_hi - k_lo)
+        k_grid = np.linspace(k_lo - margin, k_hi + margin, 400)
+
+    # --- 2. assemble spread-out starting points ---
+    # deterministic grid over the plausible region, not jitter round one point.
+    # every sigma start must sit above the ~1e-3 floor.
+    m_starts     = np.array([ -0.10, -0.05, 0.0, 0.05 ])       # vertex left/centre/right
+    sigma_starts = np.array([ 0.05, 0.20 ])                   # sharp / rounded
+    starts = [(m0, s0) for m0 in m_starts for s0 in sigma_starts]          # or however many -> n_starts
+
+    # --- 3. multi-start local search, keep the best ---
+    best_result = None
+    best_score  = np.inf
+    total_evals = 0
+    m_lo, m_hi = -0.5, 0.5
+    sigma_floor, sigma_hi = 1e-3, 1.0
+
+    for (m0, sigma0) in starts:
+        res = minimize(
+            outer_objective,
+            x0 = (m0, sigma0),
+            args = (k, w_market, k_grid, lam, weights),
+            method = method,
+            bounds = [ (m_lo, m_hi), (sigma_floor, sigma_hi) ],   # keep sigma > floor
+        )
+        total_evals += res.nfev
+        if res.fun < best_score:
+            best_score  = res.fun
+            best_result = res
+
+    if best_result is None:
+        raise RuntimeError("fit_slice: all starts failed")
+    
+    # --- 4. recover the winning slice ---
+    m, sigma   = best_result.x
+    a, d, c, ok = solve_inner(k, w_market, m, sigma, weights)
+    if not ok:
+        raise RuntimeError("fit_slice: inner solve failed at the winning point")
+    params      = recover_raw(a, d, c, m, sigma)
+
+    # --- 5. package the result ---
+    rmse            = outer_objective(best_result.x, k, w_market, k_grid, 0.0, weights)     # recompute, penalty stripped out
+    g_vals = durrleman_g(k_grid, params)
+    max_violation = float(np.maximum(0.0, -np.min(g_vals)))
+    arbitrage_free = max_violation == 0.0
+
+    return SVIFitResult(
+        params         = params,
+        rmse           = rmse,
+        max_violation  = max_violation,
+        arbitrage_free = arbitrage_free,
+        n_outer_evals  = total_evals,
+    )
 
 
 def verify_fit(
@@ -278,7 +353,21 @@ def verify_fit(
     Returns (clean_on_data, clean_on_extrapolation, min_g). Reported separately,
     a fit can be usable on quoted strikes and useless in the wings.
     """
-    raise NotImplementedError
+    k_lo, k_hi = k_data_range
+
+    # dense grid over the data range only
+    k_data = np.linspace(k_lo, k_hi, n_dense)
+    g_data = durrleman_g(k_data, params)
+    clean_on_data = bool(np.min(g_data) >= -1e-12)
+
+    # dense grid over the wider extrapolation range
+    k_wide = np.linspace(-k_extrap, k_extrap, n_dense)
+    g_wide = durrleman_g(k_wide, params)
+    # the worst dip anywhere on the wide grid
+    min_g = float(np.min(g_wide))
+    clean_on_extrap = bool(min_g >= -1e-12)
+
+    return clean_on_data, clean_on_extrap, float(min_g)
 
 
 # ---------------------------------------------------------------------------

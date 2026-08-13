@@ -191,3 +191,31 @@ def test_g_negative_when_lee_bound_violated():
     k = np.linspace(-1.0, 1.0, 2001)
     g = durrleman_g(k, p)
     assert np.min(g) < 0.0
+    
+# ---------------------------------------------------------------------------
+# 5. Optimisation
+# ---------------------------------------------------------------------------
+
+from calibration.svi import fit_slice
+
+def test_fit_slice_recovers_known_params():
+    """Ground truth: synthesize w from known SVI params, fit, recover them.
+
+    Certifies the whole inner-to-outer chain end to end. Noiseless, so the
+    recovered params should match tightly; this is the gate before any real
+    CBOE data touches the fitter.
+    """
+    true = SVIParams(a=0.04, b=0.4, rho=-0.3, m=-0.05, sigma=0.15)
+    k = np.linspace(-0.4, 0.4, 25)
+    w = svi_raw(k, true)  # noiseless synthetic market
+
+    result = fit_slice(k, w, lam=0.0)
+    p = result.params
+
+    assert np.isclose(p.a, true.a, atol=1e-3)
+    assert np.isclose(p.b, true.b, atol=1e-3)
+    assert np.isclose(p.rho, true.rho, atol=1e-2)
+    assert np.isclose(p.m, true.m, atol=1e-2)
+    assert np.isclose(p.sigma, true.sigma, atol=1e-2)
+    assert result.rmse < 1e-4
+    assert result.arbitrage_free
