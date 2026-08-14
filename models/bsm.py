@@ -162,3 +162,21 @@ def bsm_greeks_fd(
     rho = (price_up - price_down) / (2 * h)
     
     return {'delta': delta, 'gamma': gamma, 'vega': vega, 'theta': theta, 'rho': rho}
+
+def bsm_vega(
+    S: ArrayLike,
+    K: ArrayLike,
+    T: ArrayLike,
+    r: float,
+    sigma: ArrayLike,
+    b: float | None = None,
+) -> np.ndarray:
+    """Analytic BSM vega with cost-of-carry b, matching bsm_price's convention.
+
+    Vega is per unit of sigma. Uses the same d1 and the same e^{(b-r)T} spot
+    factor as bsm_price, so it is forward-consistent for a parity-implied forward.
+    """
+    if b is None:
+        b = r
+    d1 = (np.log(S / K) + (b + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    return S * np.exp((b - r) * T) * norm.pdf(d1) * np.sqrt(T)
