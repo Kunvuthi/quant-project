@@ -838,22 +838,106 @@ A running record of work completed each day as documentation.
     cells stubbed with what each should plot. No code or plots yet, that is
     tomorrow's work
 
-#### Tomorrow
-- Fill the notebook code cells against synthetic data: jagged-vs-clean smile,
-  the five-parameter sweep, g firing on a Lee-violating slice vs staying
-  positive on a clean one, the identifiability near-degeneracy, the
-  ground-truth recovery demo
-- Then the real-data bridge (section 7): CBOE chain -> clean (k, w). This is
-  the actual remaining module work and where real data bites: OTM convention,
-  parity-implied forward as canonical spot, quotes to total variance, weights
-  from bid-ask spreads
-- First real CBOE slice fits, each gated with verify_fit
-- If time: SABR, or the surface level (fit_surface shortest-maturity-first +
-  calendar check)
+### Day 29 - Thu Aug 14
+
+Notebook day: filled the SVI teaching notebook end to end, ran the first real
+CBOE fits, caught and diagnosed a real-data bug, and laid the SABR theory
+foundation. No SABR code yet, that starts next session.
+
+#### Notebook 10_svi_fit.ipynb, synthetic teaching cells (all filled + plotted)
+- Jagged-vs-clean smile (the motivation figure), noisy quotes vs smooth SVI
+  curve
+- Five-parameter sweep, one panel each for a, b, rho, m, sigma. The rho panel
+  (curves fanning opposite ways from the vertex) and sigma panel (vertex
+  roundness, curves converging in the wings) are the most instructive. The
+  wing-convergence in the sigma panel visually previews why sigma is badly
+  identified from wing data alone
+- Arbitrage figure: admissible slice (g > 0 everywhere) vs Lee-violating slice
+  (b=5, rho=-0.7), with g dipping negative and the butterfly region shaded. The
+  checker fires on the illegal slice, stays clean on the legal one
+- Identifiability near-degeneracy: two param sets nearly coincident near the
+  money, separating in the wings
+- Ground-truth recovery: fit_slice on noiseless synthetic data recovers all
+  five params to 4 dp, rmse 4.5e-7, min_g +0.11. Certifies the whole chain
+
+#### First real CBOE fit (31 DTE SPX)
+- Full pipeline works end to end: CBOE feed -> clean -> parity forward -> OTM
+  convention -> carry-consistent IV -> total variance -> weighted two-stage fit
+  -> arbitrage gate
+- Had to add carry-aware `bsm_vega` to models/bsm.py. The existing vega inside
+  `bsm_greeks` hardcodes r in d1 and drops the e^{(b-r)T} factor, so it is wrong
+  for a parity forward. New standalone bsm_vega mirrors bsm_price's d1 and carry,
+  validated against bsm_greeks_fd at b=r
+- Weights: inverse-variance from bid-ask spreads via vega. Raw max/min weight
+  ratio 4.5e3 (tight ATM vs loose wings, the vega-conditioning story again),
+  clipped to 1000x and normalized. All 71 strikes gave finite weights
+- Fit result: a~0, b=0.026, rho=-0.861, m=-0.034, sigma=0.067, rmse 2.6e-5,
+  arbitrage_free True, min_g +0.141, Lee b(1+|rho|)=0.048 (far from 2)
+- Key read: the steep left wing comes almost entirely from rho near -1, not from
+  a large b. Skew is expressed as asymmetry, not overall steepness. Classic
+  short-dated index downside fear. The two far-downside points sit slightly off
+  the curve and the fit correctly does not chase them (weighting visible in the
+  residuals). Right wing past k~0.07 is pure extrapolation, no call data, but
+  verify_fit confirms it stays arbitrage-free
+
+#### Debugging catch: the pinned-rho mystery (the real lesson of the day)
+- Multi-maturity comparison first gave 77 DTE rho = -1.0000, pinned exactly on
+  the boundary, implying skew *steepened* with tenor (wrong direction)
+- Two diagnostics flagged it: the exact boundary pin (a param on its constraint
+  is the fit saying it wants to go further and cannot), and a visible
+  discontinuity at the put/call join near k=0 (signature of a mispriced forward)
+- Cause was neither market nor parametrization: `to_kw` read F, S, R, T from
+  global scope, so it silently used the 31 DTE values while fitting the 77 DTE
+  slice. Wrong F and T -> corrupted (k, w) -> fitter contorts to bridge it,
+  pinning rho
+- Fix: refactor to_kw to take F, S, r, T as explicit arguments, computing the
+  carry b internally. Hunted down both callers (Cell 18 and fit_expiry).
+  Corrected fit: rho -0.86 (31 DTE) vs -0.78 (77 DTE), skew flattening with
+  tenor as expected, the phenomenon seen in real SPX
+- ATM consistency check confirms the forward is now good: at strike 7850, put IV
+  0.14006 vs call IV 0.14003, agreeing to 4 dp. Put-call parity holding
+- Lesson: a function reading globals produced a plausible, arbitrage-free,
+  completely wrong fit. The only tell was the pinned parameter. "Pinned
+  parameter is suspect" earns its place as a diagnostic, same family as the
+  z-score catch in W4. LinkedIn-post material alongside the COS bug and Heston
+  trap
+
+#### SABR theory laid down (code next session)
+- SABR = Stochastic Alpha Beta Rho. Genuine stochastic-vol model (SDE for
+  forward + SDE for its vol), unlike SVI which is a static shape. Its selling
+  point is a closed-form asymptotic implied-vol formula (Hagan 2002), so
+  calibration is fast, no Fourier/PDE/MC
+- Four params: alpha (level ~ ATM vol), beta (backbone exponent, forward-vol
+  relationship), rho (skew, same role as SVI/Heston), nu (vol-of-vol, curvature;
+  the one param not in the acronym)
+- beta and rho both drive skew, so badly identified from one slice. Standard fix:
+  fix beta a priori (equity beta=1), calibrate (alpha, rho, nu). Same
+  identifiability lesson as SVI, resolved by pinning rather than reparametrizing
+- SABR fits in IMPLIED-VOL space, not total-variance. Objective compares model
+  sigma_B(K) to market IVs. to_kw already gives per-strike IVs
+- Calibration is a plain 3D nonlinear least squares, no inner/outer reduction.
+  Less code than SVI
+- One numerical trap: z/x(z) is 0/0 at K=F and unstable in a neighborhood
+  (catastrophic cancellation as z->0). Branch to the ATM expression near the
+  money, removable-singularity handling like the Little Heston Trap and
+  bsm_price's degenerate masks
+- Failure modes to respect: Hagan is asymptotic, degrades at long T / high
+  vol-of-vol, and can give negative density (butterfly arb) in the low-strike
+  wing. The SABR analogue of the Durrleman condition. Different tradeoff point:
+  dynamics + closed form, at the cost of being an approximation that can violate
+  arbitrage in the wings
+
+#### Still open
+- SABR implementation: sabr_vol (Hagan + ATM branch), validation (converge to
+  ATM as K->F, flat smile as nu->0), calibrate (alpha, rho, nu) to the CBOE
+  slice, overlay SABR vs SVI on the same slice
+- SVI module refinements still deferred: continuation lam-ramping, svi_density,
+  surface level (fit_surface + calendar check)
 
 #### Pace note
-On track for full W6 by Wed next week. Module machinery done and certified,
-remaining bulk is real-data plumbing plus the second model (SABR/Heston)
+Well ahead. Full pipeline fits real data and is validated, SABR theory done.
+Comfortably on track for full W6 by Wed next week, with SABR code and the
+surface level as the remaining work.
 
 #### Design decisions
 - **Butterfly penalty lives in the outer objective**, squared hinge
