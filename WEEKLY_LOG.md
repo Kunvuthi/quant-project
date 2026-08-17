@@ -838,7 +838,7 @@ A running record of work completed each day as documentation.
     cells stubbed with what each should plot. No code or plots yet, that is
     tomorrow's work
 
-### Day 29 - Thu Aug 14
+### Day 29 - Fri Aug 14
 
 Notebook day: filled the SVI teaching notebook end to end, ran the first real
 CBOE fits, caught and diagnosed a real-data bug, and laid the SABR theory
@@ -927,17 +927,90 @@ foundation. No SABR code yet, that starts next session.
   dynamics + closed form, at the cost of being an approximation that can violate
   arbitrage in the wings
 
-#### Still open
-- SABR implementation: sabr_vol (Hagan + ATM branch), validation (converge to
-  ATM as K->F, flat smile as nu->0), calibrate (alpha, rho, nu) to the CBOE
-  slice, overlay SABR vs SVI on the same slice
-- SVI module refinements still deferred: continuation lam-ramping, svi_density,
-  surface level (fit_surface + calendar check)
+### Day 30 - Mon Aug 17
+
+SABR implementation day. Built and certified the Hagan vol formula in
+models/sabr.py. Calibration and the notebook writeup are tomorrow.
+
+#### Placement decision
+- sabr_vol goes in models/, not pricing/ or calibration/. It is a closed-form
+  formula mapping params -> implied vol (the SABR analogue of bsm_price), no
+  numerical scheme, so it is a model definition. pricing/ is for numerical
+  pricers (pde, fourier, carr_madan); calibration/ is for recovering params
+  from market data. The SABR *calibration* (least squares to a slice) will go
+  in calibration/sabr.py tomorrow
+
+#### The z/x(z) removable singularity, and deriving the branch threshold
+- The z/x(z) factor is 0/0 at K=F and cancellation-prone in a neighbourhood
+  (x(z) ~ z there, so dividing two small near-equal numbers loses digits).
+  Branch to a series expansion near z=0: z/x(z) ~ 1 + (rho/2) z +
+  (2-3 rho^2)/12 z^2
+- Ran a raw-vs-series agreement experiment (rel diff vs z, log-log, several
+  rho) to DERIVE the threshold rather than guess it. Result was more
+  informative than expected:
+  - rho=0 curve: clean U-valley bottoming at machine precision (~1e-14) around
+    z ~ 1e-3, cancellation noise on the left, truncation rise on the right
+  - rho != 0 curves: NO machine-precision valley; they rise monotonically from
+    ~1e-8 (small z) to ~1e-2 (large z). Reason: the two-term series is only
+    O(z^3)-accurate when rho != 0 (the z^1 term dominates, next dropped term is
+    z^3); only at rho=0 does the z^1 term vanish and the series become
+    effectively higher-order, agreeing to machine precision
+  - Set _Z_SMALL = 1e-3: series good to ~1e-9 below it (ample vs a ~1e-4 vol
+    fit tolerance), raw formula past the cancellation zone above it. Agreement
+    at the crossover ~1e-8, plenty
+  - Free validation: the rho=0 curve reaching machine precision confirms the
+    z^2 series coefficient is correct. A wrong coefficient would not bottom out
+- _z_over_x uses the bsm_price safe-value trick: evaluate the raw branch on a
+  z_safe (small entries swapped to 1.0) so np.where does not emit divide/log
+  warnings on the masked-out points (np.where computes BOTH branches fully
+  before selecting)
+
+#### sabr_vol and sabr_atm_vol
+- sabr_atm_vol: the K=F limit, alpha / F^(1-beta) * [1 + (...) T]. Clean closed
+  form, and the limit the general formula must converge to
+- sabr_vol: full Hagan formula as leading level term * z/x(z) * [1 + (...) T],
+  with an elementwise np.where branch to the ATM value where |z| < _Z_SMALL
+- Sign convention: used log(F/K) (Hagan) which flips vs the SVI k = log(K/F).
+  Harmless here (appears as even powers in the level term, linearly in z where
+  it flows through x(z) symmetrically) but noted for when SABR and SVI smiles
+  get overlaid on the same axis
+
+#### tests/test_sabr.py, 8 tests, all green
+- ATM consistency: general formula == sabr_atm_vol at K=F to atol 1e-12
+  (algebraically identical, so any gap is a transcription bug). Checked across
+  beta in {0, 0.5, 0.7, 1} and several rho
+- Removable singularity: smile continuous through the ATM branch, and finite
+  everywhere including exactly at K=F
+- Structural: nu=0 kills the z-factor curvature; z/x(z) -> 1 at z=0; rho=0
+  series matches raw to 1e-10 (the coefficient-correctness ground truth);
+  z-factor stays finite and positive under sign flip
+- Debug: test_smile_continuous_through_atm first failed at max jump 2.4e-5 vs a
+  bound of 1e-3*mean ~ 2e-5. Not a discontinuity, the absolute bound smuggled
+  in a wrong assumption about the vol scale (SABR vols here ~0.02, so adjacent
+  points over a +-0.05 band vary more than "a fraction of a percent"). Fixed by
+  making the test scale-free: a real branch step is a LOCAL spike, so assert
+  dv.max() < 5*median(dv) instead of an absolute bound. A continuity test
+  should test for a spike-vs-background, not bound the natural slope
+
+#### Tomorrow
+- calibration/sabr.py: fit (alpha, rho, nu) with beta fixed, plain 3D nonlinear
+  least squares on implied vols (no inner/outer reduction like SVI). Fit to the
+  same 31 DTE CBOE slice used for SVI
+- Overlay SABR vs SVI on the same slice: static shape vs dynamic model fitting
+  the same market
+- SABR notebook section: paste the theory writeup, add the calibration cells
+  and the SVI-vs-SABR comparison, plus a learning writeup on what differs
+
+#### Still open (unchanged)
+- SVI refinements: continuation lam-ramping, svi_density, surface level
+  (fit_surface + calendar check)
+- SVI notebook: markdown pass around the real-data cells (pipeline, pinned-rho
+  debugging note, reading the 31 DTE fit)
 
 #### Pace note
-Well ahead. Full pipeline fits real data and is validated, SABR theory done.
-Comfortably on track for full W6 by Wed next week, with SABR code and the
-surface level as the remaining work.
+Ahead of schedule. sabr_vol built and certified today; calibration is the
+shorter half (3D least squares). Comfortably on track for full W6 by Wed, with
+the surface level and SVI notebook polish as buffer.
 
 #### Design decisions
 - **Butterfly penalty lives in the outer objective**, squared hinge
