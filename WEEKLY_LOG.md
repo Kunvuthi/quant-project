@@ -992,123 +992,84 @@ models/sabr.py. Calibration and the notebook writeup are tomorrow.
   dv.max() < 5*median(dv) instead of an absolute bound. A continuity test
   should test for a spike-vs-background, not bound the natural slope
 
-#### Tomorrow
-- calibration/sabr.py: fit (alpha, rho, nu) with beta fixed, plain 3D nonlinear
-  least squares on implied vols (no inner/outer reduction like SVI). Fit to the
-  same 31 DTE CBOE slice used for SVI
-- Overlay SABR vs SVI on the same slice: static shape vs dynamic model fitting
-  the same market
-- SABR notebook section: paste the theory writeup, add the calibration cells
-  and the SVI-vs-SABR comparison, plus a learning writeup on what differs
+### Day 31 - Wed Aug 19
 
-#### Still open (unchanged)
-- SVI refinements: continuation lam-ramping, svi_density, surface level
-  (fit_surface + calendar check)
-- SVI notebook: markdown pass around the real-data cells (pipeline, pinned-rho
-  debugging note, reading the 31 DTE fit)
+SABR calibration to real data plus the SVI-vs-SABR comparison, then a long
+real-data debugging session retrofitting notebook 10 to build_slice. Model was
+built and certified Day 30.
+
+#### calibration/sabr.py
+- calibrate_sabr: plain 3D nonlinear least squares on implied vols, beta fixed,
+  fitting (alpha, rho, nu). No inner/outer reduction (Hagan is nonlinear in all
+  three, no linearizing substitution). scipy least_squares, trust-region,
+  box bounds (alpha>0, |rho|<1, nu>0). sqrt(W)-weighted residual so the internal
+  square-and-sum recovers the weighted SSQ, same trick as SVI solve_inner.
+  Returns SABRParams (carries beta, self-describing) + unweighted vol-point RMSE
+
+#### First real SABR fit (SPX 2026-09-18, 30 DTE, 440 strikes)
+- alpha=0.127 (sensible ATM vol), rho=-0.634 (strong downside skew), nu=2.93
+  (high vol-of-vol, SABR working hard to bend to the steep skew),
+  rmse=0.0096 = ~0.96 vol points
+- ~1 vol-point RMSE is the finding: SABR is a different object from SVI. Fewer
+  effective params (3 vs 5), tied to a real SDE, cannot contort as freely
+
+#### Residual diagnostic: WHERE SABR misses
+- Two distinct misfits. (1) Deep left wing (k < -0.15): monotone drift to -3
+  vol points at k=-0.4, SABR underprices deep downside vol. Hagan's asymptotic
+  breakdown, the formula is small-|k|/small-T and k=-0.4 at 30 DTE is far
+  outside it. (2) Body: gentle S-shaped wiggle, signature of too few shape DOF,
+  the fixed shape crosses over/under the true smile so the misfit alternates
+  sign. SVI's extra params absorb this
+
+#### SVI vs SABR overlay
+- Near ATM indistinguishable; left wing SVI tracks, SABR peels away underneath;
+  far right (no data past k~0.04) they diverge freely. Even SVI underfits the
+  deepest puts (market prices tail risk more aggressively than any smooth
+  parametrization). Conclusion, discovered not assumed: agree where easy (ATM),
+  diverge where hard (wings). Flexibility (SVI) vs dynamics (SABR)
+
+#### Pipeline promoted to module: build_slice
+- Added build_slice to data/option_chain.py: fetch -> clean -> parity forward ->
+  OTM convention -> carry-consistent IV -> total variance -> inverse-variance
+  weights, one call taking target_days. bsm_implied_vol/bsm_vega passed IN as
+  args to keep data/ from depending on models/ (no circular import)
+- Retrofitted notebook 10 to use it: deleted the to_kw/build_weights helpers and
+  the hand-assembled cells. Structurally kills the Day 29 pinned-rho globals bug,
+  no notebook globals for a helper to leak
+
+#### Real-data robustness bugs (the day's real lesson)
+- Chased a cascade of failures fitting the second maturity, each masking the next:
+  1. .apply(axis=1) returned a DataFrame not a Series ("Columns must be same
+     length as key"). Symptom, not cause
+  2. Root cause: bsm_implied_vol crashed because bsm_price returned NaN at the
+     brentq lower bracket (sigma=1e-6, then still 1e-4) for a near-money strike.
+     Tiny vol_time denominator in d1 pushes the formula into a NaN dead zone.
+     Fixed with try/except around brentq returning np.nan (row drops via dropna)
+  3. That unmasked the true problem: find_closest_expiry(75) landed on an
+     ILLIQUID expiry. Cleaning wiped it to 1 put, so implied_forward_from_parity
+     had no common strikes and returned F=nan, which propagated to a cryptic
+     zero-size-array crash three functions downstream
+- Fix was expiry selection, not code: scanned liquidity across targets, 60 DTE
+  (2026-10-16, the standard October monthly, third-Friday) gave 127 calls / 193
+  puts. Monthlies are far more liquid than arbitrary weeklies. Switched the
+  comparison to 30 vs 60 DTE. 60 DTE forward validated by ATM put/call IV
+  agreement (0.1368 vs 0.1355 straddling k=0)
+- Hardening lesson: a live-data pipeline must fail LOUD on thin/degenerate input.
+  Silent NaN propagation turned a one-line data problem into a multi-function
+  hunt.
+
+#### Still open
+- SVI refinements (deferred, non-blocking): continuation lam-ramping,
+  svi_density, surface level (fit_surface + calendar check)
+- Optional: SABR at beta != 1 to show the backbone effect
+- Git: merge feature/week-06-calibration --no-ff, tag v0.6-week6
 
 #### Pace note
-Ahead of schedule. sabr_vol built and certified today; calibration is the
-shorter half (3D least squares). Comfortably on track for full W6 by Wed, with
-the surface level and SVI notebook polish as buffer.
-
-#### Design decisions
-- **Butterfly penalty lives in the outer objective**, squared hinge
-  $\lambda\sum\max(0,-g(k_i))^2$, so the inner solve stays linear. $g\ge 0$ is
-  emphatically not linear in $(a,d,c)$ and putting it inside would destroy the
-  reason for the reduction
-  - Accepted cost: the composite is inconsistent, inner minimizes pure RMSE
-    while outer sees RMSE plus penalty. Documented, not swept under
-  - **Not regularization.** Ridge expresses a preference; this is a hard
-    admissibility condition. A slice with $g<0$ is not a worse fit, it is not a
-    density. So $\lambda$ is not cross-validated, it is ramped until violations
-    vanish and the accepted fit is gated on $g\ge0$ directly, pass/fail
-  - Continuation strategy: fit unpenalized first ($\lambda=0$), gate, only refit
-    with ramped $\lambda$ warm-started from that solution if the gate fails.
-    Most slices should cost nothing
-- **Penalty grid fixed in $k$-space** across outer iterations, not regenerated
-  per candidate. A moving grid makes the penalty jump as violation dips fall
-  between sample points, and Nelder-Mead reads those jumps as real structure.
-  Resolution handles the real concern instead, with the accepted fit
-  re-verified on a much denser grid afterwards
-- **One quote per strike** by the OTM convention (puts $k<0$, calls $k\ge0$),
-  never blended. The ITM leg is the illiquid one. Also, since the forward is
-  parity-implied, call/put IV disagreement at other strikes signals the forward
-  is slightly off at that strike, not two independent measurements to average.
-  Log it as a diagnostic instead
-- **Weights frozen from raw market IVs**, never updated inside the optimizer
-  - Updating breaks inner linearity ($W$ would depend on $(a,d,c)$)
-  - Worse, it opens a degenerate direction: $W_{ii}$ falls as fitted vol rises,
-    so the objective can be reduced by *inflating* $w$ without fitting anything
-    better. The correct likelihood carries a $\sum\log\sigma_i(\theta)$ term
-    that penalizes exactly this, and dropping it is what opens the hole. Same
-    reason a learned noise scale cannot be treated as fixed in PyMC
-  - IRLS is the honest version if self-consistency is ever wanted
-  - Weight construction: spread $\to$ vol via vega, vol $\to$ total variance via
-    $2\sigma_{BS}\tau$. Reintroduces vega, so low-vega strikes are down-weighted
-    automatically, consistent with the W4-W5 conditioning thread
-
-#### Written
-- `svi_raw`, `svi_raw_first`, `svi_raw_second`, `reduced_design_matrix`,
-  `reduced_constraints` done; `solve_inner` nearly done
-
-#### Bugs caught in review
-1. **Sign error in the radicand**, $(k-m)^2-\sigma^2$ instead of $+$, in all
-   three of `svi_raw` and both derivatives. Nasty failure mode: NaN only when
-   $|k-m|<\sigma$, a hole centred exactly on the vertex, finite and plausible
-   everywhere else, so a wing-only test passes clean. Loud where you look least
-2. `raise dw` / `raise d2w` instead of `return`, from editing the
-   `raise NotImplementedError` line rather than replacing it
-3. `reduced_design_matrix` built with `np.array([...])` giving shape $(3,n)$
-   instead of $(n,3)$. Silently square and wrong at exactly 3 strikes, and
-   otherwise the shape error surfaces layers away in the outer objective. Fixed
-   with `np.column_stack`
-4. `np.linalg.lstsq(A, ub)` as the SLSQP start: least-squares fitting the
-   *constraint* rows, which contain no market data at all. Lands on boundaries
-   and knows nothing about the slice. Wanted `lstsq(Xw, ww)`, the unconstrained
-   fit to the data
-5. `Warning.add_note` on the class: silent no-op with nothing raising it, which
-   was the exact failure the line was meant to prevent
-
-#### Good call worth keeping
-- Put $\sigma$ in `ub` (as $2\sigma$) rather than $1/\sigma$ in `A` for the Lee
-  rows. Legal since $\sigma>0$, keeps `A` as pure $\pm1$ entries, and degrades
-  gracefully as $\sigma$ shrinks instead of blowing up the coefficient matrix
-  exactly where the vertex is sharpest
-- Falls out of that: as $\sigma\to0$ the Lee rows force $c=d=0$, so with $c\ge0$
-  the feasible set **collapses to a single point** (a flat slice). The outer
-  search therefore needs a hard lower bound on $\sigma$ (~1e-3), and should log
-  when the optimizer sits on it, since that signals the data wants a kink raw
-  SVI cannot deliver
-- `tau` now confirmed unused in `reduced_constraints` since everything is in
-  total variance; drop from the signature or comment why it stays
-
-#### Open for tomorrow
-- Finish `solve_inner`: two-stage branch (unconstrained `lstsq`, feasibility
-  check `np.all(A @ x <= ub)`, SLSQP only on failure). Decide strict `<= ub` vs
-  `+ tol`, a choice coupled to the clip in `recover_raw`. Log *which*
-  constraint row failed, not just that one did
-- Failure-path signature: leaning towards a flag over raise or warn, with
-  `outer_objective` returning `np.inf` for a candidate whose inner solve failed,
-  so the search walks away rather than accepting a garbage fit. Raising is wrong
-  inside a loop called thousands of times
-- `recover_raw` guards: degenerate $c$ ($\rho$ genuinely undefined at $b=0$,
-  pick and document a convention rather than letting 1e-14 decide the skew) and
-  $\rho$ overshooting 1 by tolerance (kills $\sqrt{1-\rho^2}$ downstream). Both
-  tolerance-boundary bugs, same family as the COS normalization
-- `durrleman_g` plus validation gates, ground-truth-first as usual:
-  - FD convergence-rate check on both derivatives (slope 2, stopping the $h$
-    sweep before the roundoff floor at $h\sim\epsilon^{1/3}$, $\epsilon^{1/4}$)
-  - Evaluated at the vertex $k=m$ (exact closed forms, no discretization error
-    to hide behind) and at $m\pm\sigma$, $m\pm10\sigma$ for the crossover and
-    asymptotic regimes, both signs to catch a $\rho$ flip
-  - Test params all distinct and none equal to 1, else $b/\sigma$ and $b\sigma$
-    are indistinguishable and a swapped $b,\sigma$ passes. Using
-    $(a,b,\rho,m,\sigma)=(0.04,0.4,-0.3,-0.05,0.15)$
-  - Flat vol must give $g\equiv1$ and reproduce the lognormal exactly; density
-    integrates to 1; $b$ broken past the Lee bound must make $g$ go negative
-    (a checker that never fires is not a checker)
-- Then `outer_objective`, `fit_slice`, and first fit against real CBOE slices
+W6 core complete: SVI and SABR both calibrated to real data, validated,
+compared, with the whole pipeline hardened into a reusable module. The
+debugging detour was long but produced a genuine real-data robustness lesson
+(illiquid expiries, NaN forwards, fail-loud) worth as much as the models. Done
+by the Wed target
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
