@@ -1058,18 +1058,98 @@ built and certified Day 30.
   Silent NaN propagation turned a one-line data problem into a multi-function
   hunt.
 
-#### Still open
-- SVI refinements (deferred, non-blocking): continuation lam-ramping,
-  svi_density, surface level (fit_surface + calendar check)
-- Optional: SABR at beta != 1 to show the backbone effect
-- Git: merge feature/week-06-calibration --no-ff, tag v0.6-week6
+### Day 32 - Thu Aug 20
 
-#### Pace note
-W6 core complete: SVI and SABR both calibrated to real data, validated,
-compared, with the whole pipeline hardened into a reusable module. The
-debugging detour was long but produced a genuine real-data robustness lesson
-(illiquid expiries, NaN forwards, fail-loud) worth as much as the models. Done
-by the Wed target
+W6 close-out. Built the surface level (fit_surface + calendar arbitrage check),
+completing the SVI arbitrage-free-surface pipeline, then merge and tag.
+
+#### Calendar arbitrage: the concept
+- Longer-dated option must be worth at least as much as a shorter one at the
+  same moneyness (extra time = extra optionality). In total variance this is
+  plain monotonicity: w(k, tau_1) <= w(k, tau_2) for tau_1 < tau_2. Variance
+  accumulates with time, can only increase
+- Distinct from butterfly: butterfly is WITHIN a slice (density >= 0,
+  Durrleman g), calendar is BETWEEN slices (w monotone in tau). A surface needs
+  both. Had the first (verify_fit), built the second today
+- Checked at equal k (log-forward-moneyness against each maturity's own
+  forward), NOT equal absolute strike. Same-moneyness is the honest economic
+  comparison (5% OTM at 30d vs 5% OTM at 60d occupy the same smile position).
+  This is Gatheral's condition, and it is why total variance + log-forward-
+  moneyness are a matched coordinate pair, the calendar check is where the
+  second half pays off
+- Key subtlety: slices are fit INDEPENDENTLY, nothing ties maturities together,
+  so fitted curves can cross (esp. wings) giving calendar arb even from clean
+  quotes. A real risk, hence a real check
+
+#### fit_surface + calendar_violation (calibration/svi.py, filled the stubs)
+- fit_surface: sweeps build_slice + fit_slice over a list of target maturities,
+  shortest first, keyed by real tau (not target-days, since actual DTE differs).
+  Illiquid expiries (build_slice now raises) are warned-and-skipped, so the
+  surface is built from whatever liquid maturities succeed. narrowed the try to
+  ONLY build_slice so a fit_slice bug surfaces instead of being mis-skipped as
+  illiquid
+- calendar_violation: evaluates every fitted slice on a shared k-grid into a
+  W[k, tau] grid, then np.diff along the tau axis, clip(0, -dW) gives violation
+  depth, max is the worst crossing. Vectorized over the whole grid, no loop.
+  Returns (max_violation, W) so W is available as a diagnostic to plot
+- Bugs caught in review: RuntimeWarning(...) does nothing (need warnings.warn,
+  the Warning.add_note family again); the monotonicity check was indented INSIDE
+  the fill loop (diffing a half-filled grid) and had to be dedented out;
+  surface[tau] is a SVIFitResult so svi_raw needs surface[tau].params;
+  np.full(nan) init so an unfilled column poisons loudly not plausibly
+
+#### Result on live SPX (29 / 57 / 92 DTE)
+- max_violation = 0.0, calendar arbitrage-free. Three independently-fit
+  maturities nest perfectly, no crossing. All three individually butterfly-free.
+  A complete arbitrage-free surface on both conditions
+- rho term structure: -0.987 (29d), -0.876 (57d), -0.823 (92d), monotonically
+  relaxing toward zero. Skew-flattening with tenor, now clean across THREE
+  maturities (the corrected, uncorrupted version of what the Day 29 globals bug
+  had mangled)
+- Term-structure plot: curves nested like tree rings, gaps = forward variance
+  per future period (all positive), gaps fan wider on the downside = term
+  structure of skew. Downside protection gets disproportionately dearer with
+  tenor
+- Caveat noted (verify_fit-style): max_violation=0 holds on the data-supported
+  grid; a wider grid into the longest slice's deep-wing extrapolation is a
+  stricter test
+
+#### W6 deliverable complete
+- Full SVI arbitrage-free surface pipeline: per-slice fit (certified on synthetic
+  ground truth), butterfly gate (verify_fit), multi-maturity surface fit
+  (fit_surface), calendar check (calendar_violation). Plus SABR calibrated and
+  compared. All on live CBOE data via the build_slice module
+- Notebook 10 (SVI): theory, synthetic teaching cells, real fit, multi-maturity
+  skew, surface. Notebook 11 (SABR): theory, threshold experiment, calibration,
+  SVI-vs-SABR comparison
+- Close-out: Restart & Run All both notebooks, full test suite green, merge
+  feature/week-06-calibration --no-ff, tag v0.6-week6
+
+#### Deferred to W7-adjacent (handover)
+- SVI refinements, none blocking, all genuine extras:
+  - Continuation lam-ramping in fit_slice (currently fixed lam; the machinery to
+    ramp lam when the g-gate fails, warm-started, is designed but not wired)
+    Every real slice so far fit arbitrage-free at lam=0, so it has not been
+    needed yet
+  - svi_density (the belt-and-suspenders density cross-check vs g; g itself is
+    certified so this is redundant confidence, not a gap)
+  - calendar_violation refinement: restrict/flag to the data-overlap region vs
+    extrapolation (verify_fit-style), currently detects all crossings
+    conservatively
+- SABR: beta != 1 sweep to show the backbone effect (teaching illustration, not
+  capability)
+- SSVI: the surface-level parametrization that makes calendar-arb-freeness hold
+  by construction. The natural next step IF independent fits start crossing.
+  Not needed while the market term structure stays well-behaved
+- Standing infra items (unchanged): r hardcoded at 0.045 (could pull FRED 1M
+  T-bill per maturity); Phase 3 QuantLib as production pricing reference
+
+#### Next week (W7): jump diffusions (Merton, Kou)
+- The local-vol/Heston dynamics thread points here: local vol gets smile
+  dynamics wrong, Heston is Markovian so flattens term structure too fast, jumps
+  add the short-dated skew that diffusions cannot. The steep short-dated rho
+  (~-0.99 at 29d) seen this week is exactly the empirical motivation, a pure
+  diffusion struggles to make a 29d smile that steep, jumps generate it naturally
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
@@ -1080,6 +1160,7 @@ by the Wed target
 - All Day 11–15 work pushed to `feature/week-03-dupire` branch on GitHub
 - All Day 16–20 work pushed to `feature/week-04-heston` branch on GitHub
 - All Day 21–25 work pushed to `feature/week-05-fourier-pricing` branch on GitHub
+- All Day 26–32 work pushed to `feature/week-06-heston-calibration` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - **Phase 3 note**: adopt QuantLib (conda-forge `quantlib`) as the production pricing
   reference - cross-validate own pricers against it, and lean on it for the pricing layer
