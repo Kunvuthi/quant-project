@@ -15,6 +15,8 @@ Note: Tau not included as not in formula.
 
 from typing import Callable, Literal, NamedTuple
 import warnings
+import pandas as pd
+from data.option_chain import build_slice
 
 import numpy as np
 from scipy.optimize import minimize
@@ -196,15 +198,27 @@ def svi_density(k: np.ndarray, params: SVIParams, tau: float) -> np.ndarray:
 
 
 def calendar_violation(
-    slices: dict[float, SVIParams],
+    surface: dict[float, SVIFitResult],
     k_grid: np.ndarray,
-) -> float:
-    """Worst violation of monotonicity of w in maturity across fitted slices.
+) -> tuple[float, np.ndarray]:
+    """Worst calendar-arbitrage violation across a fitted surface.
 
-    Zero means calendar arbitrage free on k_grid. Slice-by-slice raw SVI does
-    not guarantee this, it has to be checked after the fact.
+    Calendar arbitrage-free means total variance is non-decreasing in maturity
+    at fixed k: w(k, tau_1) <= w(k, tau_2) for tau_1 < tau_2. Slices are fit
+    independently, so two curves can cross (especially in the wings); this
+    detects it. Returns (max_violation, W) where W is the (n_k, n_tau) grid of
+    total variance for diagnostics. max_violation == 0 means arbitrage-free.
     """
-    raise NotImplementedError
+    taus = sorted(surface.keys())                      # ascending
+    W = np.full((len(k_grid), len(taus)), np.nan)
+    for j, tau in enumerate(taus):
+        W[:, j] = svi_raw(k_grid, surface[tau].params)       # params for that slice
+        
+    # monotonicity: w must not decrease left-to-right along the tau axis
+    dW = np.diff(W, axis=1)                           # w(tau_{j+1}) - w(tau_j)
+    violation = np.maximum(0.0, -dW)                  # positive where w dropped
+    max_violation = float(np.max(violation))          # worst crossing anywhere
+    return max_violation, W
 
 
 # ---------------------------------------------------------------------------
@@ -374,18 +388,37 @@ def verify_fit(
 # Surface level
 # ---------------------------------------------------------------------------
 
-
 def fit_surface(
-    slices: dict[float, tuple[np.ndarray, np.ndarray]],
+    all_opts: pd.DataFrame,
+    spot: float,
+    targets: list[int],
+    r: float,
+    bsm_implied_vol,
+    bsm_vega,
     lam: float = 0.0,
-    order: Literal["ascending-tau", "descending-tau"] = "ascending-tau",
 ) -> dict[float, SVIFitResult]:
-    """Fit each maturity independently, shortest first.
+    """Fit an SVI slice per target maturity, skipping illiquid ones.
 
-    Shortest first because small w with steep w' is where butterfly failures
-    actually occur, and knowing early beats a tidy loop.
+    Sweeps build_slice + fit_slice over targets, shortest first (butterfly
+    failures surface on short slices). Keyed by real tau, not target-days,
+    since the calendar condition is stated in tau and actual DTE differs from
+    the requested target. Illiquid expiries (build_slice raises) are warned and
+    skipped, so the surface is built from whatever liquid maturities succeed.
     """
-    raise NotImplementedError
+    # sort targets ascending so we fit shortest maturities first
+    surface = {}
+    for target in sorted(targets):
+        try:
+            s = build_slice(all_opts, spot, target, r, bsm_implied_vol, bsm_vega)
+        except ValueError as e:
+            warnings.warn(f"fit_surface: skipping target {target}, {e}")
+            continue
+        result = fit_slice(s["k"], s["w"], weights=s["weights"], lam=lam)
+        tau = s["T"]
+        surface[tau] = result        # or store (result, s) if the grid needs data ranges
+    if len(surface) < 2:
+        warnings.warn("fit_surface: fewer than 2 liquid slices, calendar check not meaningful")
+    return surface
 
 
 def svi_smile_interpolator(
