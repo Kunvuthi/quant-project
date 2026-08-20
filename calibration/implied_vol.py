@@ -45,9 +45,11 @@ def bsm_implied_vol(
     def f(sigma):
         return bsm_price(S, K, T, r, sigma, option_type, b) - price
     
-    sigma_imp = brentq(f, 1e-6, 5.0, xtol=tol)    
-    
-    return sigma_imp
+    try:
+        sigma_imp = brentq(f, 1e-6, 5.0, xtol=tol)
+    except ValueError:
+        return np.nan
+    return sigma_imp 
 
 def compute_smile(
     df: pd.DataFrame,

@@ -1,4 +1,4 @@
-# Weekly Log
+# Weekly Log (Year - 2026)
 
 A running record of work completed each day as documentation.
 
@@ -707,6 +707,450 @@ A running record of work completed each day as documentation.
 - **Next**: Week 6, Heston + SABR calibration, SVI smile smoothing (deferred
   since W1/W3)
 
+## Week 6 (Jul 23 - Aug 19): Calibration (SVI, Heston + SABR)
+
+### Day 26 - Thu Jul 23
+- Started Week 6, branch `feature/week-06-calibration`, new module
+  `calibration/svi.py`. Theory and scaffolding day, no fitting run yet
+- **Raw SVI parametrization** in total implied variance against log-moneyness
+  $k=\log(K/F)$: $w(k)=a+b\left(\rho(k-m)+\sqrt{(k-m)^2+\sigma^2}\right)$
+  - Total variance not implied vol, because calendar arbitrage reduces to
+    $\partial_T w \ge 0$, plain monotonicity; the same condition in vol space
+    is uglier and easy to get wrong
+  - Log-moneyness against the forward, not spot, so slices are
+    maturity-comparable and centred on ATMF; parity-implied forward already
+    canonical from W1
+  - SVI is Stochastic Volatility *Inspired*, no SDE underneath. Static
+    parametrization with no dynamics, so it is the clean arbitrage-free target
+    Heston and SABR calibrate *against*, not a model in its own right
+- **Vertex identities** at $k=m$: $w=a+b\sigma$, $w'=b\rho$, $w''=b/\sigma$
+  - These are also the three observable combinations near the money (level,
+    slope, curvature), which is exactly why raw SVI is badly identified:
+    $\{a,b,\sigma\}$ collapse onto two of them, and $\rho$ only separates from
+    $b$ once the wings pin $b$ down. On thin noisy CBOE wings, $b$ goes soft
+- **Zeliade two-stage reduction** adopted for this reason. Substituting
+  $y=(k-m)/\sigma$, $c=b\sigma$, $d=\rho b\sigma$ gives $w=a+dy+c\sqrt{y^2+1}$,
+  linear in $(a,d,c)$ for fixed $(m,\sigma)$
+  - Inner problem: constrained linear least squares, cheap and reliable
+  - Outer problem: 2D Nelder-Mead over $(m,\sigma)$ only, the two geometrically
+    interpretable parameters. Five correlated dimensions down to two
+  - Recovery $b=c/\sigma$, $\rho=d/c$
+- **Lee wing bound derived rather than copied.** As $k\to\infty$, $w\sim\beta k$
+  with $\beta=b(1+\rho)$, so $g(\infty)=1/4-\beta^2/16$ and $g\ge 0$ forces
+  $\beta\le 2$ in total-variance units
+  - Claude initially quoted 4 from memory; that is either the two-wing sum form
+    or a slack box constraint. Published constants here differ by convention
+    (total variance vs vol, per-wing vs summed) and a wrong factor silently
+    lets long-dated slices fit steeper wings than any martingale supports
+  - Same lesson as the COS normalization: derive in your own convention
+- **Durrleman condition**: butterfly arbitrage is exactly $g(k)<0$, since the
+  rest of the density $\frac{1}{\sqrt{2\pi w}}e^{-d_2^2/2}$ is strictly positive
+  - $g=\left(1-\frac{kw'}{2w}\right)^2-\frac{w'^2}{4}\left(\frac1w+\frac14\right)+\frac{w''}{2}$
+  - $w''>0$ always for raw SVI, so only the middle term can drive $g$ negative
+  - Splitting it is the useful bit: the $-w'^2/16$ piece is asymptotic and just
+    reproduces Lee, while $-w'^2/(4w)$ is the *practical* failure mode. It blows
+    up where $w$ is small and $w'$ steep, i.e. **short-dated slices on the steep
+    put wing, not the far wing**
+  - Consequences: fit shortest maturities first (failures surface before a whole
+    surface is built on top), and make the $g$ grid densest near the money
+- Analytic $g$ from analytic $w,w',w''$, never numerical second differences of a
+  priced call strip. Same reasoning as W3's nested-`np.gradient` sawtooth
+
+### Day 27 - Wed Aug 12
+- Back after a ~3 week break. Reconciliation plus one new function, `durrleman_g`
+- **Reconciled `svi.py` against the log.** The three W6D1 fixes had landed
+  (radicand +sigma^2 in all three derivative funcs, `return` not `raise`,
+  `column_stack`), but a fresh read caught four new fill-in slips:
+  1. `np.ones_like(len(k))` - `len(k)` is a scalar so this returned a single 1,
+     not a column. Fixed to `ones_like(k)`
+  2. `reduced_constraints(sigma, tau)` called with two args after `tau` was
+     dropped from the signature - instant TypeError. Fixed
+  3. `recover_raw` returned a bare `(b, rho)` tuple, silently dropping a, m,
+     sigma. Rewritten to full `SVIParams` with both guards: degenerate-c floor
+     (1e-12, rho=0 for the flat-slice case where rho is genuinely undefined) and
+     rho clip to [-1, 1] (SLSQP satisfies |d|<=c only to tolerance, overshoot
+     kills sqrt(1-rho^2) downstream)
+  4. Dropped vestigial `tau` from `solve_inner`
+  - 1 and 3 were silent, the dangerous ones
+- **`solve_inner` two-stage branch completed**: unconstrained `lstsq`,
+  feasibility check, SLSQP only on failure warm-started from the lstsq point
+- **`durrleman_g` written and certified.** g = (1 - k w'/(2w))^2
+  - w'^2/4 (1/w + 1/4) + w''/2, each of w, w', w'' evaluated once
+- **Wrote `tests/test_svi.py`, 12 tests, all green:**
+  - Vertex identities at k=m against exact closed forms w=a+b*sigma, w'=b*rho,
+    w''=b/sigma, atol 1e-14. Params all-distinct and none equal to 1 so a
+    swapped b/sigma cannot pass by coincidence, plus a meta-test on that
+  - FD consistency: w' vs central diff of w, w'' vs central diff of w', across
+    vertex, crossover (m +/- sigma), wings (m +/- 10 sigma), both signs
+  - Convergence-rate: log-log slope of FD error vs h must be ~2
+  - Structural: w'' > 0 across a wide grid, integer-k dtype safety (W5 lesson)
+  - Durrleman g gates: flat slice (b=0) gives g==1 everywhere (free correctness
+    test, catches a dropped factor or sign error in term one); admissible slice
+    stays g > 0 (no false positives); Lee-bound-violating slice
+    (b(1+|rho|) > 2) drives g < 0 somewhere (a checker that never fires is not
+    a checker)
+- **Convergence-rate debug**: `test_second_derivative_convergence_rate` first
+  read slope ~4, not ~2. Not a wrong derivative (that plateaus at slope 0) but
+  an unlucky eval point (m + 0.5 sigma) where the leading h^2 coefficient
+  ~w'''' is near zero, so h^4 dominates and slope reads high. Moved the sweep
+  near the vertex (m + 0.15 sigma) where higher derivatives are large and
+  generic. Slope back to ~2. Slope-too-high is as diagnostic as too-low
+
+### Day 28 - Thur Aug 13
+- Closed out the SVI module (bar the real-data bridge) and scaffolded the
+  teaching notebook. Outer layer from yesterday now has its final gate
+- **`verify_fit` written**: post-acceptance arbitrage gate on a much denser
+  grid (20k points) than the optimizer used, since g can dip negative between
+  the optimizer's coarser grid points, worst near the vertex where w'' peaks.
+  Checks two regions separately and returns (clean_on_data, clean_on_extrap,
+  min_g):
+  - data range: a violation here means the fit is arbitrageable where we have
+    quotes, a real failure
+  - extrapolation range (|k| out to 2): a violation here means the wings are
+    unusable, which matters because Heston and Dupire reach out there
+  - min_g returned unclamped: positive tells the safety margin, negative the
+    depth of the worst dip, both useful
+  - used a -1e-12 tolerance on the >= 0 check rather than strict, so a fit
+    numerically grazing g=0 does not read as a violation. Same
+    tolerance-boundary judgment as the recover_raw guards
+  - fixed the usual builtin-`min` habit (np.min), and wrapped the bool returns
+    in bool() so the tuple[bool, bool, float] annotation is truthful, not
+    np.bool_
+- **SVI module now complete for a first real fit**: derivatives, solve_inner,
+  recover_raw, durrleman_g, butterfly_penalty, outer_objective, fit_slice,
+  verify_fit all done and consistent. Still deferred (refinements, not
+  blockers): continuation lam-ramping, svi_density, and the surface level
+  (fit_surface + calendar check)
+- **Scaffolded `10_svi_fit.ipynb`** as a teaching notebook for retrospective
+  reading, structured to build the ideas in the order they land rather than
+  the order the code was written:
+  1. the problem (noisy quotes to usable surface, the three reasons: denoise,
+     no-arbitrage, continuity)
+  2. the parametrization (five params and their geometry, linear asymptotes =
+     Lee, SVI is Inspired with no SDE underneath)
+  3. why total variance (calendar arbitrage = monotonicity in tau)
+  4. arbitrage within a slice and g (only the middle term goes negative, short
+     put wing, asymptote recovers Lee's bound)
+  5. the two-stage reduction (identifiability, Zeliade, nested loops)
+  6. validation, ground-truth-first
+  7. real CBOE data, stubbed for tomorrow
+  - markdown cells written out in full (the teaching prose is the point), code
+    cells stubbed with what each should plot. No code or plots yet, that is
+    tomorrow's work
+
+### Day 29 - Fri Aug 14
+
+Notebook day: filled the SVI teaching notebook end to end, ran the first real
+CBOE fits, caught and diagnosed a real-data bug, and laid the SABR theory
+foundation. No SABR code yet, that starts next session.
+
+#### Notebook 10_svi_fit.ipynb, synthetic teaching cells (all filled + plotted)
+- Jagged-vs-clean smile (the motivation figure), noisy quotes vs smooth SVI
+  curve
+- Five-parameter sweep, one panel each for a, b, rho, m, sigma. The rho panel
+  (curves fanning opposite ways from the vertex) and sigma panel (vertex
+  roundness, curves converging in the wings) are the most instructive. The
+  wing-convergence in the sigma panel visually previews why sigma is badly
+  identified from wing data alone
+- Arbitrage figure: admissible slice (g > 0 everywhere) vs Lee-violating slice
+  (b=5, rho=-0.7), with g dipping negative and the butterfly region shaded. The
+  checker fires on the illegal slice, stays clean on the legal one
+- Identifiability near-degeneracy: two param sets nearly coincident near the
+  money, separating in the wings
+- Ground-truth recovery: fit_slice on noiseless synthetic data recovers all
+  five params to 4 dp, rmse 4.5e-7, min_g +0.11. Certifies the whole chain
+
+#### First real CBOE fit (31 DTE SPX)
+- Full pipeline works end to end: CBOE feed -> clean -> parity forward -> OTM
+  convention -> carry-consistent IV -> total variance -> weighted two-stage fit
+  -> arbitrage gate
+- Had to add carry-aware `bsm_vega` to models/bsm.py. The existing vega inside
+  `bsm_greeks` hardcodes r in d1 and drops the e^{(b-r)T} factor, so it is wrong
+  for a parity forward. New standalone bsm_vega mirrors bsm_price's d1 and carry,
+  validated against bsm_greeks_fd at b=r
+- Weights: inverse-variance from bid-ask spreads via vega. Raw max/min weight
+  ratio 4.5e3 (tight ATM vs loose wings, the vega-conditioning story again),
+  clipped to 1000x and normalized. All 71 strikes gave finite weights
+- Fit result: a~0, b=0.026, rho=-0.861, m=-0.034, sigma=0.067, rmse 2.6e-5,
+  arbitrage_free True, min_g +0.141, Lee b(1+|rho|)=0.048 (far from 2)
+- Key read: the steep left wing comes almost entirely from rho near -1, not from
+  a large b. Skew is expressed as asymmetry, not overall steepness. Classic
+  short-dated index downside fear. The two far-downside points sit slightly off
+  the curve and the fit correctly does not chase them (weighting visible in the
+  residuals). Right wing past k~0.07 is pure extrapolation, no call data, but
+  verify_fit confirms it stays arbitrage-free
+
+#### Debugging catch: the pinned-rho mystery (the real lesson of the day)
+- Multi-maturity comparison first gave 77 DTE rho = -1.0000, pinned exactly on
+  the boundary, implying skew *steepened* with tenor (wrong direction)
+- Two diagnostics flagged it: the exact boundary pin (a param on its constraint
+  is the fit saying it wants to go further and cannot), and a visible
+  discontinuity at the put/call join near k=0 (signature of a mispriced forward)
+- Cause was neither market nor parametrization: `to_kw` read F, S, R, T from
+  global scope, so it silently used the 31 DTE values while fitting the 77 DTE
+  slice. Wrong F and T -> corrupted (k, w) -> fitter contorts to bridge it,
+  pinning rho
+- Fix: refactor to_kw to take F, S, r, T as explicit arguments, computing the
+  carry b internally. Hunted down both callers (Cell 18 and fit_expiry).
+  Corrected fit: rho -0.86 (31 DTE) vs -0.78 (77 DTE), skew flattening with
+  tenor as expected, the phenomenon seen in real SPX
+- ATM consistency check confirms the forward is now good: at strike 7850, put IV
+  0.14006 vs call IV 0.14003, agreeing to 4 dp. Put-call parity holding
+- Lesson: a function reading globals produced a plausible, arbitrage-free,
+  completely wrong fit. The only tell was the pinned parameter. "Pinned
+  parameter is suspect" earns its place as a diagnostic, same family as the
+  z-score catch in W4. LinkedIn-post material alongside the COS bug and Heston
+  trap
+
+#### SABR theory laid down (code next session)
+- SABR = Stochastic Alpha Beta Rho. Genuine stochastic-vol model (SDE for
+  forward + SDE for its vol), unlike SVI which is a static shape. Its selling
+  point is a closed-form asymptotic implied-vol formula (Hagan 2002), so
+  calibration is fast, no Fourier/PDE/MC
+- Four params: alpha (level ~ ATM vol), beta (backbone exponent, forward-vol
+  relationship), rho (skew, same role as SVI/Heston), nu (vol-of-vol, curvature;
+  the one param not in the acronym)
+- beta and rho both drive skew, so badly identified from one slice. Standard fix:
+  fix beta a priori (equity beta=1), calibrate (alpha, rho, nu). Same
+  identifiability lesson as SVI, resolved by pinning rather than reparametrizing
+- SABR fits in IMPLIED-VOL space, not total-variance. Objective compares model
+  sigma_B(K) to market IVs. to_kw already gives per-strike IVs
+- Calibration is a plain 3D nonlinear least squares, no inner/outer reduction.
+  Less code than SVI
+- One numerical trap: z/x(z) is 0/0 at K=F and unstable in a neighborhood
+  (catastrophic cancellation as z->0). Branch to the ATM expression near the
+  money, removable-singularity handling like the Little Heston Trap and
+  bsm_price's degenerate masks
+- Failure modes to respect: Hagan is asymptotic, degrades at long T / high
+  vol-of-vol, and can give negative density (butterfly arb) in the low-strike
+  wing. The SABR analogue of the Durrleman condition. Different tradeoff point:
+  dynamics + closed form, at the cost of being an approximation that can violate
+  arbitrage in the wings
+
+### Day 30 - Mon Aug 17
+
+SABR implementation day. Built and certified the Hagan vol formula in
+models/sabr.py. Calibration and the notebook writeup are tomorrow.
+
+#### Placement decision
+- sabr_vol goes in models/, not pricing/ or calibration/. It is a closed-form
+  formula mapping params -> implied vol (the SABR analogue of bsm_price), no
+  numerical scheme, so it is a model definition. pricing/ is for numerical
+  pricers (pde, fourier, carr_madan); calibration/ is for recovering params
+  from market data. The SABR *calibration* (least squares to a slice) will go
+  in calibration/sabr.py tomorrow
+
+#### The z/x(z) removable singularity, and deriving the branch threshold
+- The z/x(z) factor is 0/0 at K=F and cancellation-prone in a neighbourhood
+  (x(z) ~ z there, so dividing two small near-equal numbers loses digits).
+  Branch to a series expansion near z=0: z/x(z) ~ 1 + (rho/2) z +
+  (2-3 rho^2)/12 z^2
+- Ran a raw-vs-series agreement experiment (rel diff vs z, log-log, several
+  rho) to DERIVE the threshold rather than guess it. Result was more
+  informative than expected:
+  - rho=0 curve: clean U-valley bottoming at machine precision (~1e-14) around
+    z ~ 1e-3, cancellation noise on the left, truncation rise on the right
+  - rho != 0 curves: NO machine-precision valley; they rise monotonically from
+    ~1e-8 (small z) to ~1e-2 (large z). Reason: the two-term series is only
+    O(z^3)-accurate when rho != 0 (the z^1 term dominates, next dropped term is
+    z^3); only at rho=0 does the z^1 term vanish and the series become
+    effectively higher-order, agreeing to machine precision
+  - Set _Z_SMALL = 1e-3: series good to ~1e-9 below it (ample vs a ~1e-4 vol
+    fit tolerance), raw formula past the cancellation zone above it. Agreement
+    at the crossover ~1e-8, plenty
+  - Free validation: the rho=0 curve reaching machine precision confirms the
+    z^2 series coefficient is correct. A wrong coefficient would not bottom out
+- _z_over_x uses the bsm_price safe-value trick: evaluate the raw branch on a
+  z_safe (small entries swapped to 1.0) so np.where does not emit divide/log
+  warnings on the masked-out points (np.where computes BOTH branches fully
+  before selecting)
+
+#### sabr_vol and sabr_atm_vol
+- sabr_atm_vol: the K=F limit, alpha / F^(1-beta) * [1 + (...) T]. Clean closed
+  form, and the limit the general formula must converge to
+- sabr_vol: full Hagan formula as leading level term * z/x(z) * [1 + (...) T],
+  with an elementwise np.where branch to the ATM value where |z| < _Z_SMALL
+- Sign convention: used log(F/K) (Hagan) which flips vs the SVI k = log(K/F).
+  Harmless here (appears as even powers in the level term, linearly in z where
+  it flows through x(z) symmetrically) but noted for when SABR and SVI smiles
+  get overlaid on the same axis
+
+#### tests/test_sabr.py, 8 tests, all green
+- ATM consistency: general formula == sabr_atm_vol at K=F to atol 1e-12
+  (algebraically identical, so any gap is a transcription bug). Checked across
+  beta in {0, 0.5, 0.7, 1} and several rho
+- Removable singularity: smile continuous through the ATM branch, and finite
+  everywhere including exactly at K=F
+- Structural: nu=0 kills the z-factor curvature; z/x(z) -> 1 at z=0; rho=0
+  series matches raw to 1e-10 (the coefficient-correctness ground truth);
+  z-factor stays finite and positive under sign flip
+- Debug: test_smile_continuous_through_atm first failed at max jump 2.4e-5 vs a
+  bound of 1e-3*mean ~ 2e-5. Not a discontinuity, the absolute bound smuggled
+  in a wrong assumption about the vol scale (SABR vols here ~0.02, so adjacent
+  points over a +-0.05 band vary more than "a fraction of a percent"). Fixed by
+  making the test scale-free: a real branch step is a LOCAL spike, so assert
+  dv.max() < 5*median(dv) instead of an absolute bound. A continuity test
+  should test for a spike-vs-background, not bound the natural slope
+
+### Day 31 - Wed Aug 19
+
+SABR calibration to real data plus the SVI-vs-SABR comparison, then a long
+real-data debugging session retrofitting notebook 10 to build_slice. Model was
+built and certified Day 30.
+
+#### calibration/sabr.py
+- calibrate_sabr: plain 3D nonlinear least squares on implied vols, beta fixed,
+  fitting (alpha, rho, nu). No inner/outer reduction (Hagan is nonlinear in all
+  three, no linearizing substitution). scipy least_squares, trust-region,
+  box bounds (alpha>0, |rho|<1, nu>0). sqrt(W)-weighted residual so the internal
+  square-and-sum recovers the weighted SSQ, same trick as SVI solve_inner.
+  Returns SABRParams (carries beta, self-describing) + unweighted vol-point RMSE
+
+#### First real SABR fit (SPX 2026-09-18, 30 DTE, 440 strikes)
+- alpha=0.127 (sensible ATM vol), rho=-0.634 (strong downside skew), nu=2.93
+  (high vol-of-vol, SABR working hard to bend to the steep skew),
+  rmse=0.0096 = ~0.96 vol points
+- ~1 vol-point RMSE is the finding: SABR is a different object from SVI. Fewer
+  effective params (3 vs 5), tied to a real SDE, cannot contort as freely
+
+#### Residual diagnostic: WHERE SABR misses
+- Two distinct misfits. (1) Deep left wing (k < -0.15): monotone drift to -3
+  vol points at k=-0.4, SABR underprices deep downside vol. Hagan's asymptotic
+  breakdown, the formula is small-|k|/small-T and k=-0.4 at 30 DTE is far
+  outside it. (2) Body: gentle S-shaped wiggle, signature of too few shape DOF,
+  the fixed shape crosses over/under the true smile so the misfit alternates
+  sign. SVI's extra params absorb this
+
+#### SVI vs SABR overlay
+- Near ATM indistinguishable; left wing SVI tracks, SABR peels away underneath;
+  far right (no data past k~0.04) they diverge freely. Even SVI underfits the
+  deepest puts (market prices tail risk more aggressively than any smooth
+  parametrization). Conclusion, discovered not assumed: agree where easy (ATM),
+  diverge where hard (wings). Flexibility (SVI) vs dynamics (SABR)
+
+#### Pipeline promoted to module: build_slice
+- Added build_slice to data/option_chain.py: fetch -> clean -> parity forward ->
+  OTM convention -> carry-consistent IV -> total variance -> inverse-variance
+  weights, one call taking target_days. bsm_implied_vol/bsm_vega passed IN as
+  args to keep data/ from depending on models/ (no circular import)
+- Retrofitted notebook 10 to use it: deleted the to_kw/build_weights helpers and
+  the hand-assembled cells. Structurally kills the Day 29 pinned-rho globals bug,
+  no notebook globals for a helper to leak
+
+#### Real-data robustness bugs (the day's real lesson)
+- Chased a cascade of failures fitting the second maturity, each masking the next:
+  1. .apply(axis=1) returned a DataFrame not a Series ("Columns must be same
+     length as key"). Symptom, not cause
+  2. Root cause: bsm_implied_vol crashed because bsm_price returned NaN at the
+     brentq lower bracket (sigma=1e-6, then still 1e-4) for a near-money strike.
+     Tiny vol_time denominator in d1 pushes the formula into a NaN dead zone.
+     Fixed with try/except around brentq returning np.nan (row drops via dropna)
+  3. That unmasked the true problem: find_closest_expiry(75) landed on an
+     ILLIQUID expiry. Cleaning wiped it to 1 put, so implied_forward_from_parity
+     had no common strikes and returned F=nan, which propagated to a cryptic
+     zero-size-array crash three functions downstream
+- Fix was expiry selection, not code: scanned liquidity across targets, 60 DTE
+  (2026-10-16, the standard October monthly, third-Friday) gave 127 calls / 193
+  puts. Monthlies are far more liquid than arbitrary weeklies. Switched the
+  comparison to 30 vs 60 DTE. 60 DTE forward validated by ATM put/call IV
+  agreement (0.1368 vs 0.1355 straddling k=0)
+- Hardening lesson: a live-data pipeline must fail LOUD on thin/degenerate input.
+  Silent NaN propagation turned a one-line data problem into a multi-function
+  hunt.
+
+### Day 32 - Thu Aug 20
+
+W6 close-out. Built the surface level (fit_surface + calendar arbitrage check),
+completing the SVI arbitrage-free-surface pipeline, then merge and tag.
+
+#### Calendar arbitrage: the concept
+- Longer-dated option must be worth at least as much as a shorter one at the
+  same moneyness (extra time = extra optionality). In total variance this is
+  plain monotonicity: w(k, tau_1) <= w(k, tau_2) for tau_1 < tau_2. Variance
+  accumulates with time, can only increase
+- Distinct from butterfly: butterfly is WITHIN a slice (density >= 0,
+  Durrleman g), calendar is BETWEEN slices (w monotone in tau). A surface needs
+  both. Had the first (verify_fit), built the second today
+- Checked at equal k (log-forward-moneyness against each maturity's own
+  forward), NOT equal absolute strike. Same-moneyness is the honest economic
+  comparison (5% OTM at 30d vs 5% OTM at 60d occupy the same smile position).
+  This is Gatheral's condition, and it is why total variance + log-forward-
+  moneyness are a matched coordinate pair, the calendar check is where the
+  second half pays off
+- Key subtlety: slices are fit INDEPENDENTLY, nothing ties maturities together,
+  so fitted curves can cross (esp. wings) giving calendar arb even from clean
+  quotes. A real risk, hence a real check
+
+#### fit_surface + calendar_violation (calibration/svi.py, filled the stubs)
+- fit_surface: sweeps build_slice + fit_slice over a list of target maturities,
+  shortest first, keyed by real tau (not target-days, since actual DTE differs).
+  Illiquid expiries (build_slice now raises) are warned-and-skipped, so the
+  surface is built from whatever liquid maturities succeed. narrowed the try to
+  ONLY build_slice so a fit_slice bug surfaces instead of being mis-skipped as
+  illiquid
+- calendar_violation: evaluates every fitted slice on a shared k-grid into a
+  W[k, tau] grid, then np.diff along the tau axis, clip(0, -dW) gives violation
+  depth, max is the worst crossing. Vectorized over the whole grid, no loop.
+  Returns (max_violation, W) so W is available as a diagnostic to plot
+- Bugs caught in review: RuntimeWarning(...) does nothing (need warnings.warn,
+  the Warning.add_note family again); the monotonicity check was indented INSIDE
+  the fill loop (diffing a half-filled grid) and had to be dedented out;
+  surface[tau] is a SVIFitResult so svi_raw needs surface[tau].params;
+  np.full(nan) init so an unfilled column poisons loudly not plausibly
+
+#### Result on live SPX (29 / 57 / 92 DTE)
+- max_violation = 0.0, calendar arbitrage-free. Three independently-fit
+  maturities nest perfectly, no crossing. All three individually butterfly-free.
+  A complete arbitrage-free surface on both conditions
+- rho term structure: -0.987 (29d), -0.876 (57d), -0.823 (92d), monotonically
+  relaxing toward zero. Skew-flattening with tenor, now clean across THREE
+  maturities (the corrected, uncorrupted version of what the Day 29 globals bug
+  had mangled)
+- Term-structure plot: curves nested like tree rings, gaps = forward variance
+  per future period (all positive), gaps fan wider on the downside = term
+  structure of skew. Downside protection gets disproportionately dearer with
+  tenor
+- Caveat noted (verify_fit-style): max_violation=0 holds on the data-supported
+  grid; a wider grid into the longest slice's deep-wing extrapolation is a
+  stricter test
+
+#### W6 deliverable complete
+- Full SVI arbitrage-free surface pipeline: per-slice fit (certified on synthetic
+  ground truth), butterfly gate (verify_fit), multi-maturity surface fit
+  (fit_surface), calendar check (calendar_violation). Plus SABR calibrated and
+  compared. All on live CBOE data via the build_slice module
+- Notebook 10 (SVI): theory, synthetic teaching cells, real fit, multi-maturity
+  skew, surface. Notebook 11 (SABR): theory, threshold experiment, calibration,
+  SVI-vs-SABR comparison
+- Close-out: Restart & Run All both notebooks, full test suite green, merge
+  feature/week-06-calibration --no-ff, tag v0.6-week6
+
+#### Deferred to W7-adjacent (handover)
+- SVI refinements, none blocking, all genuine extras:
+  - Continuation lam-ramping in fit_slice (currently fixed lam; the machinery to
+    ramp lam when the g-gate fails, warm-started, is designed but not wired)
+    Every real slice so far fit arbitrage-free at lam=0, so it has not been
+    needed yet
+  - svi_density (the belt-and-suspenders density cross-check vs g; g itself is
+    certified so this is redundant confidence, not a gap)
+  - calendar_violation refinement: restrict/flag to the data-overlap region vs
+    extrapolation (verify_fit-style), currently detects all crossings
+    conservatively
+- SABR: beta != 1 sweep to show the backbone effect (teaching illustration, not
+  capability)
+- SSVI: the surface-level parametrization that makes calendar-arb-freeness hold
+  by construction. The natural next step IF independent fits start crossing.
+  Not needed while the market term structure stays well-behaved
+- Standing infra items (unchanged): r hardcoded at 0.045 (could pull FRED 1M
+  T-bill per maturity); Phase 3 QuantLib as production pricing reference
+
+#### Next week (W7): jump diffusions (Merton, Kou)
+- The local-vol/Heston dynamics thread points here: local vol gets smile
+  dynamics wrong, Heston is Markovian so flattens term structure too fast, jumps
+  add the short-dated skew that diffusions cannot. The steep short-dated rho
+  (~-0.99 at 29d) seen this week is exactly the empirical motivation, a pure
+  diffusion struggles to make a 29d smile that steep, jumps generate it naturally
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
@@ -716,13 +1160,8 @@ A running record of work completed each day as documentation.
 - All Day 11–15 work pushed to `feature/week-03-dupire` branch on GitHub
 - All Day 16–20 work pushed to `feature/week-04-heston` branch on GitHub
 - All Day 21–25 work pushed to `feature/week-05-fourier-pricing` branch on GitHub
+- All Day 26–32 work pushed to `feature/week-06-heston-calibration` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
-- SVI smile smoothing: flagged for W3 but deliberately NOT done. Rationale: Dupire got
-  one week and was validated on synthetic ground truth (clean surfaces) - that taught the
-  mechanism and motivation, which is the high-value learning. SVI is real-data plumbing,
-  not modelling, so it was deferred to W6 (Heston + SABR calibration), where Heston lives
-  longest (recurs W4-W6) and calibration genuinely NEEDS a clean arbitrage-free target
-  surface. Effort compounds there rather than being spent on Dupire's single week.
 - **Phase 3 note**: adopt QuantLib (conda-forge `quantlib`) as the production pricing
   reference - cross-validate own pricers against it, and lean on it for the pricing layer
   in backtesting so own code focuses on portfolio/strategy logic. Build-to-learn now,

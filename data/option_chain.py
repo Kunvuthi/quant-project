@@ -204,6 +204,71 @@ def implied_forward_from_parity(calls, puts, r, T):
     F = merged['F_est'].median()
 
     return F, merged
-        
+
+def build_slice(
+    all_options: pd.DataFrame,
+    spot: float,
+    target_days: int,
+    r: float,
+    bsm_implied_vol,
+    bsm_vega,
+    k_band: float = 0.4,
+) -> dict:
+    """Build a fittable (k, iv, w, weights) slice for one target maturity.
+
+    Ties the pipeline together: pick expiry, clean, parity forward, OTM
+    convention, carry-consistent IV, total variance, and inverse-variance
+    weights from spreads. Returns everything downstream fitters need.
+    """
+    expiries = sorted(all_options["expiry"].unique())
+    expiry, dte = find_closest_expiry(expiries, target_days=target_days)
+    T = dte / 365.0
+
+    calls_raw, puts_raw = filter_by_expiry(all_options, expiry)
+    calls = clean_chain(calls_raw, source="cboe", verbose=False)
+    puts = clean_chain(puts_raw, source="cboe", verbose=False)
+
+    F, merged = implied_forward_from_parity(calls, puts, r=r, T=T)
+    if len(merged) < 5 or not np.isfinite(F):
+        raise ValueError(
+            f"build_slice: expiry {expiry} too illiquid, "
+            f"{len(merged)} common strikes, F={F}"
+        )
+    b = np.log(F / spot) / T
+
+    def side_to_kw(df, option_type):
+        d = df.copy()
+        d["k"] = np.log(d["strike"] / F)
+        d["iv"] = d.apply(
+            lambda row: bsm_implied_vol(
+                price=row["mid"], S=spot, K=row["strike"], T=T, r=r,
+                option_type=option_type, b=b,
+            ), axis=1,
+        )
+        return d.dropna(subset=["iv"])
+
+    calls_kw = side_to_kw(calls, "call")
+    puts_kw = side_to_kw(puts, "put")
+    otm = pd.concat([puts_kw[puts_kw["k"] < 0], calls_kw[calls_kw["k"] >= 0]]).sort_values("k")
+    otm = otm[otm["k"].abs() < k_band]
+
+    otm["iv_unc"] = ((otm["ask"] - otm["bid"]) / 2.0) / otm.apply(
+        lambda row: bsm_vega(S=spot, K=row["strike"], T=T, r=r, sigma=row["iv"], b=b),
+        axis=1,
+    )
+    otm["w"] = otm["iv"]**2 * T
+    otm["w_unc"] = 2.0 * otm["iv"] * T * otm["iv_unc"]
+    otm["weight"] = 1.0 / otm["w_unc"]**2
+
+    wr = otm["weight"].to_numpy()
+    fin = np.isfinite(wr)
+    weights = np.clip(wr, wr[fin].max() * 1e-3, None)
+    weights = weights / np.median(weights[fin])
+
+    return {
+        "k": otm["k"].to_numpy(), "iv": otm["iv"].to_numpy(),
+        "w": otm["w"].to_numpy(), "weights": weights,
+        "F": F, "T": T, "dte": dte, "expiry": expiry, "otm": otm,
+    }
     
     
