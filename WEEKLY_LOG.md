@@ -1214,21 +1214,56 @@ a structural finding about the COS pricer that reshapes Tuesday.
   having in hand. Code cells stubbed with specs: merton_char_func, and the four
   validation gates (BSM limit, martingale phi(-i), COS-vs-MC, smile shape)
 
-#### Tuesday plan
-1. Refactor pricing/fourier.py: make cos_density_coefficients and the range-
-   setting char-func/cumulant agnostic, modularise so COS is model-independent
-2. Fix the _cos_psi np.empty alertness while in there
-3. models/merton.py: merton_char_func + merton_cumulants
-4. Validation gates in order (ground-truth-first): BSM limit, martingale check,
-   COS-vs-MC (simulate Merton paths as independent ground truth), smile shape
-5. Once certified, Merton drops into the refactored COS with no pricer changes
+### Day 34 - Tue Aug 25
 
-#### Rest of week
-- Wed: Kou (double-exponential jumps), same char-func + validate pattern
-- Thu: calibrate Merton and Kou to the real 29 DTE SPX slice, test whether jumps
-  capture the skew Heston missed. Compare params and fit quality
-- Fri: cross-model comparison (Heston vs Merton vs Kou on the same smiles),
-  notebook, tests green, merge --no-ff, tag v0.7-week7
+Merton implemented and certified against Monte Carlo, a day ahead of the arc.
+Details and figures in the Merton notebook.
+
+#### COS pricer refactored to model-agnostic
+- pricing/fourier.py was Heston-hardwired. Extracted a core taking pre-evaluated
+  char func values + cumulants as numbers: cos_density_coefficients_from_cf,
+  cos_price_from_cf, cos_smile_from_cf
+- Per-model thin wrappers feed it. Heston wrappers keep identical signatures,
+  just delegate. Kou reuses the core tomorrow
+- Behaviour-preserving: all existing Heston tests still pass (the check on the
+  refactor itself)
+- Fixed _cos_psi np.empty -> np.zeros (the calendar_violation silent-garbage
+  pattern)
+
+#### models/merton.py
+- merton_char_func: diffusion factor * jump factor (independence).
+  kappa = exp(mu_j + 0.5 delta_j^2) - 1 compensator in the drift
+- merton_cumulants: c1 and c2, diffusion + jump cumulants add. c2 carries
+  lam*T*(mu_j^2 + delta_j^2); the mu_j^2 is the compound-Poisson second moment,
+  dropping it narrows the range and loses wing accuracy (silent bug)
+- merton_simulate_terminal: vectorized one-step MC for validation. Given N jumps
+  the sum is Normal(N*mu_j, N*delta_j^2), so std is sqrt(N)*delta_j not
+  N*delta_j. Same kappa as the char func
+- merton_cos_price wrapper in fourier.py
+
+#### Validation (test_fourier.py::TestMerton, all green)
+- Analytic limits: BSM reduction (call+put), jump-param irrelevance at lam=0,
+  martingale phi(-i), phi(0)=1, cumulant reduction, put-call parity. These test
+  limits/identities only, not jump pricing
+- COS vs MC (the real jump-pricing test): z=0.79 on 2M paths, diff 0.084% of
+  price, residual is COS truncation not bias
+- Fixed a shared-globals bug in the test file: S0/T reassigned at module scope
+  across the Heston/Merton blocks. Moved Merton constants to class attributes
+
+#### Payoff figure (in notebook)
+- Merton short-dated smile vs BSM, both priced-and-inverted through the SAME
+  pipeline so the contrast is honest (BSM flatness demonstrated, not drawn as a
+  constant line). Merton skews left, BSM stays flat, jumps the only difference.
+  This is the steep 29 DTE skew that Heston flattens too fast
+
+#### Wednesday
+- Kou (double-exponential jumps): char func + cumulants in models/kou.py, wrapper
+  and validation reusing today's COS core and MC pattern. Then Merton-vs-Kou
+  jump-shape comparison
+
+#### Pace
+Ahead. Merton certified early because the refactor made pricing a thin wrapper
+and MC validation reused W4 discipline.
 
 #### Deferred from W6 (carried, non-blocking)
 - SVI: continuation lam-ramping, svi_density, calendar_violation data-overlap
