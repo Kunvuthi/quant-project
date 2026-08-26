@@ -1337,7 +1337,7 @@ day ahead. Theory and figures in the Kou notebook.
 - All Day 16–20 work pushed to `feature/week-04-heston` branch on GitHub
 - All Day 21–25 work pushed to `feature/week-05-fourier-pricing` branch on GitHub
 - All Day 26–32 work pushed to `feature/week-06-heston-calibration` branch on GitHub
-- All Day 33–38 work pushed to `feature/week-07-jumps` branch on GitHub
+- All Day 33–37 work pushed to `feature/week-07-jumps` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - **Phase 3 note**: adopt QuantLib (conda-forge `quantlib`) as the production pricing
   reference - cross-validate own pricers against it, and lean on it for the pricing layer
