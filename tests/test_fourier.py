@@ -1,9 +1,14 @@
 import numpy as np
+import pytest
 from models.heston import simulate_heston_paths
 from models.bsm import bsm_price
 from models.merton import (
     merton_char_func, merton_cumulants
 )
+from models.kou import (
+    kou_char_func, kou_cumulants
+)
+from pricing.fourier import kou_cos_price
 from pricing.fourier import (
     cos_call_price, cos_put_price, cos_smile
 )
@@ -191,6 +196,76 @@ class TestMerton:
         disc_payoff = np.exp(-self.R * self.T) * np.maximum(ST - K, 0.0)
         mc_price = disc_payoff.mean()
         mc_se = disc_payoff.std(ddof=1) / np.sqrt(len(ST))
+        z = abs(cos_p - mc_price) / mc_se
+        assert z < 3.0, f"COS={cos_p:.4f}, MC={mc_price:.4f}+/-{mc_se:.4f}, z={z:.2f}"
+        
+class TestKou:
+    S0, R, Q, T = 100.0, 0.03, 0.01, 0.5
+    SIGMA, LAM, P, ETA1, ETA2 = 0.20, 0.5, 0.4, 10.0, 5.0
+
+    def test_bsm_limit_call(self):
+        """lam=0 recovers BSM (jump params set nonzero, must not leak)."""
+        for K in (80.0, 100.0, 120.0):
+            kou = kou_cos_price(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                                lam=0.0, p=self.P, eta1=self.ETA1, eta2=self.ETA2,
+                                K=K, option_type="call")
+            bsm = bsm_price(self.S0, K, self.T, self.R, self.SIGMA, "call", b=self.R - self.Q)
+            assert np.isclose(kou, bsm, atol=1e-6), (K, kou, bsm)
+
+    def test_bsm_limit_put(self):
+        for K in (80.0, 100.0, 120.0):
+            kou = kou_cos_price(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                                lam=0.0, p=self.P, eta1=self.ETA1, eta2=self.ETA2,
+                                K=K, option_type="put")
+            bsm = bsm_price(self.S0, K, self.T, self.R, self.SIGMA, "put", b=self.R - self.Q)
+            assert np.isclose(kou, bsm, atol=1e-6), (K, kou, bsm)
+
+    def test_martingale_char_func(self):
+        """phi(-i) = S0 e^{(r-q)T}, jumps on, certifies kappa."""
+        phi = kou_char_func(np.array([-1j]), self.S0, self.R, self.Q, self.T,
+                            self.SIGMA, self.LAM, self.P, self.ETA1, self.ETA2)[0]
+        expected = self.S0 * np.exp((self.R - self.Q) * self.T)
+        assert np.isclose(phi.real, expected, atol=1e-8)
+        assert np.isclose(phi.imag, 0.0, atol=1e-8)
+
+    def test_char_func_at_zero(self):
+        phi = kou_char_func(np.array([0.0 + 0j]), self.S0, self.R, self.Q, self.T,
+                            self.SIGMA, self.LAM, self.P, self.ETA1, self.ETA2)[0]
+        assert np.isclose(phi, 1.0, atol=1e-12)
+
+    def test_cumulants_reduce_to_bsm_when_lam_zero(self):
+        c1, c2 = kou_cumulants(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                               lam=0.0, p=self.P, eta1=self.ETA1, eta2=self.ETA2)
+        assert np.isclose(c1, np.log(self.S0) + (self.R - self.Q - 0.5 * self.SIGMA**2) * self.T, atol=1e-12)
+        assert np.isclose(c2, self.SIGMA**2 * self.T, atol=1e-12)
+
+    def test_eta1_constraint_raises(self):
+        """eta1 <= 1 must raise (compensator divergence)."""
+        with pytest.raises(ValueError):
+            kou_char_func(np.array([1.0 + 0j]), self.S0, self.R, self.Q, self.T,
+                          self.SIGMA, self.LAM, self.P, eta1=0.8, eta2=self.ETA2)
+
+    def test_put_call_parity(self):
+        K = 100.0
+        call = kou_cos_price(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                             self.LAM, self.P, self.ETA1, self.ETA2, K, "call", L=14)
+        put = kou_cos_price(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                            self.LAM, self.P, self.ETA1, self.ETA2, K, "put", L=14)
+        lhs = call - put
+        rhs = self.S0 * np.exp(-self.Q * self.T) - K * np.exp(-self.R * self.T)
+        assert np.isclose(lhs, rhs, atol=1e-4)
+
+    def test_cos_matches_mc(self):
+        """COS vs independent Monte Carlo, z-score < 3. The real jump-pricing test."""
+        from models.kou import kou_simulate_terminal
+        K = 100.0
+        cos_p = kou_cos_price(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                              self.LAM, self.P, self.ETA1, self.ETA2, K, "call")
+        ST = kou_simulate_terminal(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                                   self.LAM, self.P, self.ETA1, self.ETA2,
+                                   n_paths=2_000_000, seed=42)
+        disc = np.exp(-self.R * self.T) * np.maximum(ST - K, 0.0)
+        mc_price, mc_se = disc.mean(), disc.std(ddof=1) / np.sqrt(len(ST))
         z = abs(cos_p - mc_price) / mc_se
         assert z < 3.0, f"COS={cos_p:.4f}, MC={mc_price:.4f}+/-{mc_se:.4f}, z={z:.2f}"
     
