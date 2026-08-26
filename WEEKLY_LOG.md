@@ -1256,14 +1256,71 @@ Details and figures in the Merton notebook.
   constant line). Merton skews left, BSM stays flat, jumps the only difference.
   This is the steep 29 DTE skew that Heston flattens too fast
 
-#### Wednesday
-- Kou (double-exponential jumps): char func + cumulants in models/kou.py, wrapper
-  and validation reusing today's COS core and MC pattern. Then Merton-vs-Kou
-  jump-shape comparison
 
-#### Pace
-Ahead. Merton certified early because the refactor made pricing a thin wrapper
-and MC validation reused W4 discipline.
+
+### Day 35 - Wed Aug 26
+
+Kou implemented and certified against Monte Carlo. Both jump models now done, a
+day ahead. Theory and figures in the Kou notebook.
+
+#### models/kou.py
+- kou_char_func: same Levy-Khintchine structure as Merton, differing only in the
+  single-jump char func. Double-exponential:
+  f_hat(u) = p*eta1/(eta1 - iu) + (1-p)*eta2/(eta2 + iu)
+  kappa = p*eta1/(eta1-1) + (1-p)*eta2/(eta2+1) - 1
+  Raises ValueError if eta1 <= 1 (compensator divergence, E[e^Y] infinite on
+  up-jumps). Calibration will bound eta1 > 1 rather than rely on the raise
+- kou_cumulants: E[Y] = p/eta1 - (1-p)/eta2, E[Y^2] = 2p/eta1^2 + 2(1-p)/eta2^2
+  (the factor 2 is the exponential second moment). Same c1/c2 add structure
+- kou_simulate_terminal: unlike Merton, the per-path jump sum has NO closed form
+  (sum of double-exponentials), so draw every individual jump, decide up/down by
+  Bernoulli(p), sample Exp magnitude, scatter-add to paths via np.add.at (NOT
+  += which mis-accumulates multiple jumps per path). Same kappa as char func
+- kou_cos_price wrapper in fourier.py
+
+#### FTAP / compensator thread (in notebook)
+- The compensator is what makes the model arbitrage-free: FTAP requires a
+  martingale measure, jumps add expected growth E[e^Y] != 1 which would break
+  the martingale, -lam*kappa in the drift removes exactly that excess. phi(-i)
+  both computes kappa (via f_hat(-i) = E[e^Y]) and verifies the martingale
+
+#### Validation (test_fourier.py::TestKou, 8 tests, all green)
+- Analytic: BSM limits (call+put), martingale phi(-i), phi(0)=1, cumulant
+  reduction, eta1<=1 raises (constraint guard, confirmed it fires)
+- COS vs MC: passes, the real jump-pricing test against the double-exponential
+  simulator
+
+#### Kou-specific finding: fatter tails need a wider COS range
+- Put-call parity first failed by 1.9e-4, and the residual was BIT-IDENTICAL at
+  N=128 and N=256, so NOT resolution-truncation. An L (range) sweep localized it:
+  residual 1.9e-4 (L=10) -> 2.9e-6 (L=14) -> 5e-9 (L=20). Collapses cleanly with
+  range, so it is tail-truncation, not a bug
+- Cause is a real model property: Kou's double-exponential tails are fatter than
+  Merton's Gaussian or Heston's, so the COS domain [a,b] must be wider to capture
+  them. Fixed the test with L=14. The fat-tail intuition shows up concretely as a
+  wider required integration domain
+- Practical consequence for Thursday: Kou calibration should use L=14-15, since
+  the deep put wing (the fat-tail region) is exactly where the default L=10 would
+  carry this error, right where we care most
+
+#### Kou vs Merton vs BSM smile (in notebook)
+- All three share diffusion vol 0.20, so differences are pure jump structure.
+  BSM flat (priced+inverted, not drawn). Both jump models skew; agree near the
+  money, diverge in the wings
+- Kou sits above Merton in both wings and its left wing lifts more than its
+  right: fatter tails (double-exponential > Gaussian jump) and asymmetric tail
+  shape (p<0.5, eta2<eta1). The two things Kou buys over Merton, made visual,
+  and visible only in the tails where the jump distributions differ
+- Caveat noted for Thursday: hand-picked params show what Kou CAN do, not what
+  the market wants. More params always fit better, so the real test is whether
+  Kou's improvement over Merton is meaningful with sensible params, not
+  overfitting
+
+#### Thursday
+- Calibrate Merton and Kou to the real 29 DTE SPX slice. Bound eta1 > 1, wider L
+  for Kou (fat-tail range). Compare fit quality and params across Heston/Merton/
+  Kou; test whether jumps capture the skew Heston missed, with the overfitting
+  question kept honest
 
 #### Deferred from W6 (carried, non-blocking)
 - SVI: continuation lam-ramping, svi_density, calendar_violation data-overlap
