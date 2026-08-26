@@ -1,6 +1,7 @@
 import numpy as np
 from models.heston import heston_char_func  # you'll need this once you get to the COS pricer itself
 from models.merton import merton_char_func, merton_cumulants
+from models.kou import kou_char_func, kou_cumulants
 from typing import Literal
 
 def _cos_chi(a: float, b: float, u_k: np.ndarray, x1: float, x2: float) -> np.ndarray:
@@ -176,4 +177,19 @@ def merton_cos_price(
     k = np.arange(N)
     u_k = k * np.pi / (b - a)
     phi_vals = merton_char_func(u_k, S0, r, q, T, sigma, lam, mu_j, delta_j)
+    return cos_price_from_cf(phi_vals, a, b, r, T, K, N, option_type)
+
+# ---------------------------------------------------------------------------
+# Merton WRAPPERS.
+# ---------------------------------------------------------------------------
+def kou_cos_price(
+    S0: float, r: float, q: float, T: float,
+    sigma: float, lam: float, p: float, eta1: float, eta2: float, K: float,
+    option_type: Literal['call', 'put'] = 'call', N: int = 128, L: float = 10,
+) -> float:
+    c1, c2 = kou_cumulants(S0, r, q, T, sigma, lam, p, eta1, eta2)
+    a, b = cos_truncation_range(c1, c2, L)
+    k = np.arange(N)
+    u_k = k * np.pi / (b - a)
+    phi_vals = kou_char_func(u_k, S0, r, q, T, sigma, lam, p, eta1, eta2)
     return cos_price_from_cf(phi_vals, a, b, r, T, K, N, option_type)
