@@ -1126,7 +1126,7 @@ completing the SVI arbitrage-free-surface pipeline, then merge and tag.
   feature/week-06-calibration --no-ff, tag v0.6-week6
 
 
-## Week 7 (Aug 24 - Aug 28): Jumps
+## Week 7 (Aug 24 - Aug 31): Jumps
 
 ### Day 33 - Mon Aug 24
 
