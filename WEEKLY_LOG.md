@@ -1316,16 +1316,70 @@ day ahead. Theory and figures in the Kou notebook.
   Kou's improvement over Merton is meaningful with sensible params, not
   overfitting
 
-#### Thursday
-- Calibrate Merton and Kou to the real 29 DTE SPX slice. Bound eta1 > 1, wider L
-  for Kou (fat-tail range). Compare fit quality and params across Heston/Merton/
-  Kou; test whether jumps capture the skew Heston missed, with the overfitting
-  question kept honest
+### Day 36 - Fri Aug 28
 
-#### Deferred from W6 (carried, non-blocking)
-- SVI: continuation lam-ramping, svi_density, calendar_violation data-overlap
-  refinement. SABR beta!=1 sweep. SSVI if independent fits start crossing.
-  r hardcoded at 0.045. All genuine extras, not gaps
+W7 calibration payoff: fit Merton and Kou to the real 29 DTE SPX slice, the
+empirical question that opened the week. Result more nuanced than expected;
+methodology (reading the fit) is the real lesson. Full analysis in the notebook.
+
+#### calibration/jumps.py
+- calibrate_merton, calibrate_kou: nonlinear least squares in IV space (price
+  strip via COS, invert to BSM IV, fit to market IV), mirroring calibrate_sabr.
+  Shared _model_ivs and _calibrate_jump helpers; per-model residual/bounds
+- Forward-consistent pricing: S0=F, r=q=R so the internal forward equals the
+  parity forward, invert with b=0. Untrusted spot never enters
+- Kou bounds enforce eta1 > 1 (the Wed constraint, at the calibration layer so
+  the pricer's ValueError guard never fires), L=14 for fat-tail wing accuracy
+- Caught a copy-paste-divergence bug in calibrate_kou's RMSE block (unpacked 5
+  Kou params into 4 Merton names, called the pricer with Merton args, returned
+  MertonParams). The exact hazard of Kou being a near-twin, caught in review
+
+#### The result: read the fit, not the raw number
+- Merton unweighted rmse 3.19 vol pts, Kou 2.20. Looked like both struggle. Fit
+  plot: both track the smile perfectly from the money to k~-0.15, then miss the
+  4 deepest puts badly (15 vol pts at k=-0.40)
+- Checked spreads before concluding: the 2 deepest points have 26.7% and 21.1%
+  bid-ask spreads (bid 0.65 / ask 0.85). Near-untradeable. Their high IV is
+  largely quote noise; a fit that nailed them would be overfitting
+- WEIGHTED rmse (inverse-variance, what the optimizer actually minimized):
+  Merton 0.30, Kou 0.20 vol pts. Both fit the LIQUID smile excellently,
+  comparable to SVI/SABR. The unweighted alarm was 2 illiquid quotes, not model
+  failure. Lesson: report weighted fit where data is trustworthy
+- Kou edges Merton even weighted (0.20 vs 0.30), so fatter tails buy a real gain
+  on trustworthy data. BUT the fit is degenerate: p=0.0065 (up-jump prob pinned
+  at ~0, near one-sided), and eta2 > eta1 (down thinner than up, opposite of
+  expected). A boundary-pinned parameter, same diagnostic as the pinned-rho bug.
+  So the 0.1 vol-pt edge comes from 2 extra params one of which collapsed to a
+  corner: close to overfitting
+
+#### Honest conclusion
+- Jumps DO answer the opening puzzle: both models capture the steep short-dated
+  skew (0.2-0.3 weighted vol pts) that pure-diffusion Heston flattens too fast
+- Neither is clearly preferred on this slice; Kou's edge is marginal and via a
+  degenerate one-sided fit. A cleaner comparison needs a more liquid/wider slice
+- Not a bug: the Kou pricer is certified (BSM limit, martingale, parity, COS-vs-
+  MC all green). Certified machinery + poor unweighted fit = the fit is the
+  finding, refined by weighting into a good fit on trustworthy data
+- Methodological lesson (the durable one): distinguished a model limitation from
+  a data-quality artifact by checking spreads and weighting; it flipped the
+  conclusion. Reading the fit mattered more than the fit. Belongs with the
+  pinned-rho and COS-normalization catches as a debugging/skepticism story
+
+#### Points to W8
+- Even Kou's fat tail missed the deepest points and degenerated one-sided,
+  suggesting one jump structure on constant-vol diffusion isn't the whole story.
+  Bates (Heston + Merton jumps) combines stochastic vol (term structure) with
+  jumps (short-dated tail); neither alone suffices. Natural next topic
+
+#### Monday
+- Deferred W6 items (SVI continuation lam-ramping, svi_density, calendar_violation
+  data-overlap refinement; SABR beta sweep), THEN close the W7 branch: notebook
+  tidy, full test suite green, merge feature/week-07-jumps --no-ff, tag v0.7-week7
+
+#### Pace
+W7 models done and certified Mon-Wed (a day ahead); calibration payoff done
+today. Branch stays open over the weekend for Monday's deferred-item cleanup
+before merge/tag
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
