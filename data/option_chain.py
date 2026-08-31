@@ -213,6 +213,7 @@ def build_slice(
     bsm_implied_vol,
     bsm_vega,
     k_band: float = 0.4,
+    max_staleness_days=None, 
 ) -> dict:
     """Build a fittable (k, iv, w, weights) slice for one target maturity.
 
@@ -225,8 +226,8 @@ def build_slice(
     T = dte / 365.0
 
     calls_raw, puts_raw = filter_by_expiry(all_options, expiry)
-    calls = clean_chain(calls_raw, source="cboe", verbose=False)
-    puts = clean_chain(puts_raw, source="cboe", verbose=False)
+    calls = clean_chain(calls_raw, source="cboe", verbose=False, max_staleness_days=max_staleness_days)
+    puts = clean_chain(puts_raw, source="cboe", verbose=False, max_staleness_days=max_staleness_days)
 
     F, merged = implied_forward_from_parity(calls, puts, r=r, T=T)
     if len(merged) < 5 or not np.isfinite(F):
