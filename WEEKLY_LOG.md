@@ -1365,21 +1365,87 @@ methodology (reading the fit) is the real lesson. Full analysis in the notebook.
   conclusion. Reading the fit mattered more than the fit. Belongs with the
   pinned-rho and COS-normalization catches as a debugging/skepticism story
 
-#### Points to W8
-- Even Kou's fat tail missed the deepest points and degenerated one-sided,
-  suggesting one jump structure on constant-vol diffusion isn't the whole story.
-  Bates (Heston + Merton jumps) combines stochastic vol (term structure) with
-  jumps (short-dated tail); neither alone suffices. Natural next topic
+### Day 37 - Mon Aug 31
 
-#### Monday
-- Deferred W6 items (SVI continuation lam-ramping, svi_density, calendar_violation
-  data-overlap refinement; SABR beta sweep), THEN close the W7 branch: notebook
-  tidy, full test suite green, merge feature/week-07-jumps --no-ff, tag v0.7-week7
+W7 close-out day: the two chosen deferred items (calendar_violation refinement,
+SABR beta sweep), both validated on real data, then merge and tag.
+
+#### calendar_violation refinement (data-region vs extrapolation split)
+- The check flagged all crossings anywhere on k_grid, including where slices
+  extrapolate. Refined to distinguish crossings IN-DATA (both slices have quotes
+  there, a real arbitrage) from crossings in the extrapolation region (SVI
+  guessing, far less alarming). Same data-vs-extrapolation logic as verify_fit
+- fit_surface now optionally returns each slice's k-range (return_ranges=True),
+  keyed by tau; calendar_violation takes an optional data_ranges dict and
+  returns a 3-tuple (max_violation_all, W, max_violation_in_data). The in-data
+  value uses the OVERLAP of each adjacent maturity pair's data ranges as the
+  mask. data_ranges=None keeps the old behaviour (NaN for the in-data value)
+- Validated on a real 3-maturity SPX surface (46/81/91d, relaxed staleness):
+  max_violation (all k) = 0, max_violation (in-data) = 0. Clean nested surface,
+  nothing to split, so the refinement correctly agrees with the unrefined check.
+  The k-ranges show it WOULD matter: 46d covers to k=0.101, 81d to k=0.149, so
+  the right wing past 0.101 is in-data for 81d but extrapolation for 46d. The
+  machinery is ready to draw that line; this surface just doesn't need it
+- rho term structure textbook again: -0.892 (46d), -0.821 (81d), -0.825 (91d)
+
+#### SABR beta sweep (beta non-identifiability, demonstrated)
+- Fit SABR at beta in {0, 0.5, 1} to the same real slice (2026-10-16, 433
+  strikes). Result: all three fits visually overlay the market, RMSE 0.26/0.33/
+  0.41 vol pts (all excellent, barely beta-dependent)
+- alpha scales exactly as F^(1-beta): 935 (b=0), 10.6 (b=0.5), 0.120 (b=1).
+  Check: 0.120 * F = 928 ~ 935, and 0.120 * sqrt(F) = 10.6, spot on. alpha is
+  the same vol wearing different units per beta
+- rho and nu stay nearly flat across beta (rho ~-0.55 to -0.58, nu ~2.5 to 2.7).
+  So alpha absorbs the beta-units change, rho/nu carry the shape. This is the
+  beta-rho identifiability from W6: one smile does not pin beta, comparably good
+  fits at any beta, which is WHY practitioners fix beta a priori. Asserted in
+  W6, now shown on real data
+- Bug caught by the sweep: calibrate_sabr's alpha bounds were [1e-6, 5], written
+  for beta=1. At beta=0, x0's alpha ~ atm_iv * F ~ 1000, outside the bound, so
+  least_squares raised "initial guess outside bounds". Fixed: alpha upper bound
+  now 5 * F**(1-beta), tracking alpha's scale per beta. Only surfaced now because
+  beta had always been fixed at 1 before, the sweep exercised beta != 1 for the
+  first time
+
+#### Data-freshness detour (Monday papercut)
+- All expiries came back 0c/0p after cleaning. Localized via the verbose funnel:
+  everything survived to the staleness filter, which dropped all rows. Monday
+  pull of Fri-close delayed data is ~3 days stale, past the 2-day default
+- Not a bug, the filter working as designed on stale data. Threaded
+  max_staleness_days through build_slice and fit_surface (both forward it to
+  clean_chain) so today's work could use a relaxed 7-day window on real quotes
+- The build_slice illiquidity guard (added last Mon) fired correctly throughout:
+  "expiry X too illiquid, 0 common strikes, F=nan" instead of a cryptic NaN
+  crash. Fail-loud paying off
+
+#### W7 sealed
+- Full test suite green, merge feature/week-07-jumps --no-ff, tag v0.7-week7
+- Week delivered: COS refactored model-agnostic; Merton + Kou char funcs,
+  cumulants, simulators, all validation gates (BSM limit, martingale, cumulant
+  reduction, parity, COS-vs-MC) green; jump calibration to real SPX with the
+  honest weighted-vs-unweighted finding (both fit liquid data to 0.2-0.3 vol
+  pts; Kou's edge via a degenerate p~0 one-sided fit); calendar refinement and
+  beta sweep as bonus. Neither pure jump model fully captures the deepest
+  (noisy) downside, motivating Bates next week
+
+#### Deferred (carried forward, non-blocking)
+- Staleness filter: 2-day default wipes Monday/off-hours pulls. Make it
+  business-day-aware or default more forgiving. Cost time twice now (W6 and
+  today's variant)
+- SVI: continuation lam-ramping, svi_density, svi_smile_interpolator (still a
+  stub). SABR beta sweep done; SSVI if independent fits ever cross
+- r hardcoded 0.045 (FRED short-tenor rate, run locally, sketched)
+
+#### Next (W8): Bates model
+- Heston + Merton jumps: stochastic vol for the term structure, jumps for the
+  short-dated tail. Directly motivated by W7's finding that neither pure jump
+  model (constant-vol diffusion + jumps) fully reaches the steep short-dated
+  skew. Reuses the model-agnostic COS core: Bates char func = Heston char func *
+  Merton jump factor (independence, the same multiply-the-char-funcs structure)
 
 #### Pace
-W7 models done and certified Mon-Wed (a day ahead); calibration payoff done
-today. Branch stays open over the weekend for Monday's deferred-item cleanup
-before merge/tag
+W7 complete and sealed on schedule. Both deferred items done and validated on
+real data. The beta sweep even caught a latent alpha-bounds bug. Clean close.
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
