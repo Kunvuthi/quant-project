@@ -52,7 +52,9 @@ def calibrate_sabr(
     atm_iv = iv_market[np.argmin(np.abs(k))]
     x0 = np.array([atm_iv * F**(1.0 - beta), -0.3, 0.5])
 
-    bounds = ([1e-6, -0.999, 1e-6], [5.0, 0.999, 10.0])  # (alpha, rho, nu)
+    alpha_scale = F ** (1.0 - beta)          # alpha lives in vol*F^(1-beta) units
+    bounds = ([1e-6, -0.999, 1e-6],
+              [5.0 * alpha_scale, 0.999, 10.0])
 
     result = least_squares(residual, x0, bounds=bounds, method="trf")
 

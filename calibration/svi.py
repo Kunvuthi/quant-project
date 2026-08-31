@@ -200,25 +200,48 @@ def svi_density(k: np.ndarray, params: SVIParams, tau: float) -> np.ndarray:
 def calendar_violation(
     surface: dict[float, SVIFitResult],
     k_grid: np.ndarray,
-) -> tuple[float, np.ndarray]:
+    data_ranges: dict[float, tuple[float, float]] | None = None,
+) -> tuple[float, np.ndarray, float]:
     """Worst calendar-arbitrage violation across a fitted surface.
 
     Calendar arbitrage-free means total variance is non-decreasing in maturity
     at fixed k: w(k, tau_1) <= w(k, tau_2) for tau_1 < tau_2. Slices are fit
     independently, so two curves can cross (especially in the wings); this
-    detects it. Returns (max_violation, W) where W is the (n_k, n_tau) grid of
-    total variance for diagnostics. max_violation == 0 means arbitrage-free.
+    detects it.
+
+    Returns (max_violation, W, max_violation_in_data). W is the (n_k, n_tau)
+    total-variance grid for diagnostics. max_violation is the worst crossing
+    anywhere on k_grid; max_violation_in_data is the worst crossing restricted
+    to the region where BOTH slices in the crossing pair have data (their
+    strike ranges overlap that k). A crossing in-data is a real arbitrage; one
+    only in the extrapolation region is far less alarming, since SVI is
+    guessing there. If data_ranges is None, max_violation_in_data is NaN.
     """
-    taus = sorted(surface.keys())                      # ascending
+    taus = sorted(surface.keys())
     W = np.full((len(k_grid), len(taus)), np.nan)
     for j, tau in enumerate(taus):
-        W[:, j] = svi_raw(k_grid, surface[tau].params)       # params for that slice
-        
-    # monotonicity: w must not decrease left-to-right along the tau axis
-    dW = np.diff(W, axis=1)                           # w(tau_{j+1}) - w(tau_j)
-    violation = np.maximum(0.0, -dW)                  # positive where w dropped
-    max_violation = float(np.max(violation))          # worst crossing anywhere
-    return max_violation, W
+        W[:, j] = svi_raw(k_grid, surface[tau].params)
+
+    dW = np.diff(W, axis=1)                       # w(tau_{j+1}) - w(tau_j)
+    violation = np.maximum(0.0, -dW)              # (n_k, n_tau-1), positive where w dropped
+    max_violation = float(np.max(violation))
+
+    if data_ranges is None:
+        return max_violation, W, float("nan")
+
+    # in-data mask: for each adjacent tau pair (column j of `violation`),
+    # a k point counts only if BOTH slices tau_j and tau_{j+1} have data there
+    in_data = np.zeros_like(violation, dtype=bool)
+    for j in range(len(taus) - 1):
+        lo_j, hi_j = data_ranges[taus[j]]
+        lo_j1, hi_j1 = data_ranges[taus[j + 1]]
+        lo = max(lo_j, lo_j1)                     # overlap of the two data ranges
+        hi = min(hi_j, hi_j1)
+        in_data[:, j] = (k_grid >= lo) & (k_grid <= hi)
+
+    masked = np.where(in_data, violation, 0.0)
+    max_violation_in_data = float(np.max(masked))
+    return max_violation, W, max_violation_in_data
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +419,8 @@ def fit_surface(
     bsm_implied_vol,
     bsm_vega,
     lam: float = 0.0,
+    return_ranges: bool = False,
+    max_staleness_days=None,
 ) -> dict[float, SVIFitResult]:
     """Fit an SVI slice per target maturity, skipping illiquid ones.
 
@@ -407,18 +432,21 @@ def fit_surface(
     """
     # sort targets ascending so we fit shortest maturities first
     surface = {}
+    ranges = {}
     for target in sorted(targets):
         try:
-            s = build_slice(all_opts, spot, target, r, bsm_implied_vol, bsm_vega)
+            s = build_slice(all_opts, spot, target, r, bsm_implied_vol, bsm_vega,
+                    max_staleness_days=max_staleness_days)
         except ValueError as e:
             warnings.warn(f"fit_surface: skipping target {target}, {e}")
             continue
         result = fit_slice(s["k"], s["w"], weights=s["weights"], lam=lam)
         tau = s["T"]
-        surface[tau] = result        # or store (result, s) if the grid needs data ranges
+        surface[tau] = result
+        ranges[tau] = (float(s["k"].min()), float(s["k"].max()))
     if len(surface) < 2:
         warnings.warn("fit_surface: fewer than 2 liquid slices, calendar check not meaningful")
-    return surface
+    return (surface, ranges) if return_ranges else surface
 
 
 def svi_smile_interpolator(

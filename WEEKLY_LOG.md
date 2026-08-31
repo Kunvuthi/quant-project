@@ -1125,31 +1125,327 @@ completing the SVI arbitrage-free-surface pipeline, then merge and tag.
 - Close-out: Restart & Run All both notebooks, full test suite green, merge
   feature/week-06-calibration --no-ff, tag v0.6-week6
 
-#### Deferred to W7-adjacent (handover)
-- SVI refinements, none blocking, all genuine extras:
-  - Continuation lam-ramping in fit_slice (currently fixed lam; the machinery to
-    ramp lam when the g-gate fails, warm-started, is designed but not wired)
-    Every real slice so far fit arbitrage-free at lam=0, so it has not been
-    needed yet
-  - svi_density (the belt-and-suspenders density cross-check vs g; g itself is
-    certified so this is redundant confidence, not a gap)
-  - calendar_violation refinement: restrict/flag to the data-overlap region vs
-    extrapolation (verify_fit-style), currently detects all crossings
-    conservatively
-- SABR: beta != 1 sweep to show the backbone effect (teaching illustration, not
-  capability)
-- SSVI: the surface-level parametrization that makes calendar-arb-freeness hold
-  by construction. The natural next step IF independent fits start crossing.
-  Not needed while the market term structure stays well-behaved
-- Standing infra items (unchanged): r hardcoded at 0.045 (could pull FRED 1M
-  T-bill per maturity); Phase 3 QuantLib as production pricing reference
 
-#### Next week (W7): jump diffusions (Merton, Kou)
-- The local-vol/Heston dynamics thread points here: local vol gets smile
-  dynamics wrong, Heston is Markovian so flattens term structure too fast, jumps
-  add the short-dated skew that diffusions cannot. The steep short-dated rho
-  (~-0.99 at 29d) seen this week is exactly the empirical motivation, a pure
-  diffusion struggles to make a 29d smile that steep, jumps generate it naturally
+## Week 7 (Aug 24 - Aug 31): Jumps
+
+### Day 33 - Mon Aug 24
+
+W7 opens: jump diffusions. Branch feature/week-07-jumps created off main after
+the W6 merge/tag. Theory-only day, Merton characteristic function derived, plus
+a structural finding about the COS pricer that reshapes Tuesday.
+
+#### What a jump is
+- Every model so far (BSM, Heston, local vol) moves the price CONTINUOUSLY:
+  Brownian paths wiggle but never teleport. A jump is a discontinuity, the price
+  gaps instantaneously by a discrete amount no matter how small the time step.
+  Models sudden moves: crashes, earnings surprises, takeover gaps
+- Compound Poisson process: WHEN jumps happen is Poisson (intensity lambda,
+  jumps/year), HOW BIG each jump is is drawn from a size distribution. Merton
+  uses normal jump sizes; Kou (Wed) uses double-exponential
+- With mu_j < 0 the jumps bias downward, which is what makes the model match
+  equity downside skew rather than just adding symmetric fat tails
+
+#### Why jumps fix short-dated skew (the empirical hook from W6)
+- A pure diffusion's short-dated log-return is nearly Gaussian (CLT kicks in
+  fast for continuous paths), so thin tails, so deep-OTM puts nearly worthless,
+  so almost no skew. But the market prices those puts richly (the steep rho
+  ~-0.99 at 29 DTE measured last week)
+- A jump can occur in ANY interval however short, so it keeps genuine weight in
+  the short-dated tail. With mu_j < 0 it is a LEFT-fat tail = skew. This is
+  exactly the steepness Heston (Markovian, flattens term structure too fast)
+  could not reach. Jumps generate it naturally with sensible params
+
+#### Merton characteristic function, derived
+- Key fact: diffusion and jumps are INDEPENDENT, so char funcs MULTIPLY:
+  phi_Merton = phi_diffusion * phi_jump. Diffusion factor is the known BSM
+  Gaussian log-price char func (with jump-compensated drift); only the jump
+  factor is new
+- Jump factor via conditioning on N (number of jumps, Poisson(lambda*tau)):
+  given N=n, the total jump is Normal(n*mu_j, n*delta_j^2). Tower property, sum
+  the Poisson-weighted Gaussian char funcs, recognise the exp series:
+    phi_jump(u) = exp( lambda*tau * ( exp(iu*mu_j - 0.5*u^2*delta_j^2) - 1 ) )
+  A special case of Levy-Khintchine: compound Poisson char func is
+  exp(lambda*tau*(f_hat(u) - 1)) with f_hat the single-jump char func
+- Martingale compensator kappa = exp(mu_j + 0.5*delta_j^2) - 1 in the drift
+  (-lambda*kappa), same logic as the Heston K0 term, cancels the mean jump
+  growth so E[S_T] = S0 exp((r-q)tau)
+- Two sanity checks fall straight out (become Tuesday tests): lambda->0 recovers
+  BSM (jump factor -> 1, drift correction vanishes); phi(-i) = S0 exp((r-q)tau)
+  is the martingale check certifying kappa
+
+#### The independence -> tractability structure (the load-bearing fact)
+- Independence gives E[product] = product of E, so char funcs multiply
+- Cumulants live in LOG space (cumulant gen func = log phi). Log of a product is
+  a sum, so cumulants ADD: c_n(Merton) = c_n(diffusion) + c_n(jump). Not "because
+  exponentials", specifically because log turns the char-func product into a sum
+- Same fact in linear space (multiply, for pricing) vs log space (add, for the
+  truncation range). This is exactly why COS loves jump models, and why the
+  refactor below pays off
+- Where it breaks: if diffusion and jumps were correlated, E[product] no longer
+  factors, char funcs would not cleanly multiply. The factorisation of
+  E[e^{iuX}e^{iuJ}] is the precise spot correlation would poison
+
+#### Structural finding: COS pricer is Heston-hardwired (reshapes Tuesday)
+- pricing/fourier.py is NOT char-func-agnostic. Two coupling points:
+  1. cos_density_coefficients calls heston_char_func by name in the body. Must
+     become generic (A_k depends on the model ONLY through the char func, which
+     is the whole point of COS)
+  2. cos_call_price / cos_smile / etc. call heston_cumulants for the truncation
+     range. Merton has its OWN cumulants, cannot reuse Heston's
+- So Merton pricing is NOT free. Tuesday gains a front step: refactor the COS
+  core to take char-func values + cumulants as INPUTS (e.g.
+  cos_price(char_func_vals, c1, c2, ...)), making it model-agnostic. Then Heston
+  and Merton both just feed it, and Kou reuses it Wednesday. ~30 min, the good
+  kind of refactor (kills per-model copy-paste of the COS body)
+- Merton cumulants are clean to derive (cleaner than Heston's monster c2):
+  diffusion + jump cumulants ADD, e.g. c1_Merton = c1_BSM + lambda*tau*mu_j.
+  Short Tuesday derivation
+
+#### Latent bug flagged (fix Tuesday)
+- _cos_psi uses np.empty(N) then fills out[1:] and out[0] separately. Correct now
+  (every element written), but np.empty + later full-fill is the same silent-
+  garbage pattern that bit calendar_violation in W6. Stay alert on refactor;
+  consider np.zeros or np.full(nan) if any element could go unwritten
+
+#### Notebook
+- Built a Merton learning notebook (theory + Tuesday code stubs, not output as a
+  file, drafted in chat). Full derivation for retrospective reading:
+  conditioning-on-N and the Levy-Khintchine recognition are the two steps worth
+  having in hand. Code cells stubbed with specs: merton_char_func, and the four
+  validation gates (BSM limit, martingale phi(-i), COS-vs-MC, smile shape)
+
+### Day 34 - Tue Aug 25
+
+Merton implemented and certified against Monte Carlo, a day ahead of the arc.
+Details and figures in the Merton notebook.
+
+#### COS pricer refactored to model-agnostic
+- pricing/fourier.py was Heston-hardwired. Extracted a core taking pre-evaluated
+  char func values + cumulants as numbers: cos_density_coefficients_from_cf,
+  cos_price_from_cf, cos_smile_from_cf
+- Per-model thin wrappers feed it. Heston wrappers keep identical signatures,
+  just delegate. Kou reuses the core tomorrow
+- Behaviour-preserving: all existing Heston tests still pass (the check on the
+  refactor itself)
+- Fixed _cos_psi np.empty -> np.zeros (the calendar_violation silent-garbage
+  pattern)
+
+#### models/merton.py
+- merton_char_func: diffusion factor * jump factor (independence).
+  kappa = exp(mu_j + 0.5 delta_j^2) - 1 compensator in the drift
+- merton_cumulants: c1 and c2, diffusion + jump cumulants add. c2 carries
+  lam*T*(mu_j^2 + delta_j^2); the mu_j^2 is the compound-Poisson second moment,
+  dropping it narrows the range and loses wing accuracy (silent bug)
+- merton_simulate_terminal: vectorized one-step MC for validation. Given N jumps
+  the sum is Normal(N*mu_j, N*delta_j^2), so std is sqrt(N)*delta_j not
+  N*delta_j. Same kappa as the char func
+- merton_cos_price wrapper in fourier.py
+
+#### Validation (test_fourier.py::TestMerton, all green)
+- Analytic limits: BSM reduction (call+put), jump-param irrelevance at lam=0,
+  martingale phi(-i), phi(0)=1, cumulant reduction, put-call parity. These test
+  limits/identities only, not jump pricing
+- COS vs MC (the real jump-pricing test): z=0.79 on 2M paths, diff 0.084% of
+  price, residual is COS truncation not bias
+- Fixed a shared-globals bug in the test file: S0/T reassigned at module scope
+  across the Heston/Merton blocks. Moved Merton constants to class attributes
+
+#### Payoff figure (in notebook)
+- Merton short-dated smile vs BSM, both priced-and-inverted through the SAME
+  pipeline so the contrast is honest (BSM flatness demonstrated, not drawn as a
+  constant line). Merton skews left, BSM stays flat, jumps the only difference.
+  This is the steep 29 DTE skew that Heston flattens too fast
+
+
+
+### Day 35 - Wed Aug 26
+
+Kou implemented and certified against Monte Carlo. Both jump models now done, a
+day ahead. Theory and figures in the Kou notebook.
+
+#### models/kou.py
+- kou_char_func: same Levy-Khintchine structure as Merton, differing only in the
+  single-jump char func. Double-exponential:
+  f_hat(u) = p*eta1/(eta1 - iu) + (1-p)*eta2/(eta2 + iu)
+  kappa = p*eta1/(eta1-1) + (1-p)*eta2/(eta2+1) - 1
+  Raises ValueError if eta1 <= 1 (compensator divergence, E[e^Y] infinite on
+  up-jumps). Calibration will bound eta1 > 1 rather than rely on the raise
+- kou_cumulants: E[Y] = p/eta1 - (1-p)/eta2, E[Y^2] = 2p/eta1^2 + 2(1-p)/eta2^2
+  (the factor 2 is the exponential second moment). Same c1/c2 add structure
+- kou_simulate_terminal: unlike Merton, the per-path jump sum has NO closed form
+  (sum of double-exponentials), so draw every individual jump, decide up/down by
+  Bernoulli(p), sample Exp magnitude, scatter-add to paths via np.add.at (NOT
+  += which mis-accumulates multiple jumps per path). Same kappa as char func
+- kou_cos_price wrapper in fourier.py
+
+#### FTAP / compensator thread (in notebook)
+- The compensator is what makes the model arbitrage-free: FTAP requires a
+  martingale measure, jumps add expected growth E[e^Y] != 1 which would break
+  the martingale, -lam*kappa in the drift removes exactly that excess. phi(-i)
+  both computes kappa (via f_hat(-i) = E[e^Y]) and verifies the martingale
+
+#### Validation (test_fourier.py::TestKou, 8 tests, all green)
+- Analytic: BSM limits (call+put), martingale phi(-i), phi(0)=1, cumulant
+  reduction, eta1<=1 raises (constraint guard, confirmed it fires)
+- COS vs MC: passes, the real jump-pricing test against the double-exponential
+  simulator
+
+#### Kou-specific finding: fatter tails need a wider COS range
+- Put-call parity first failed by 1.9e-4, and the residual was BIT-IDENTICAL at
+  N=128 and N=256, so NOT resolution-truncation. An L (range) sweep localized it:
+  residual 1.9e-4 (L=10) -> 2.9e-6 (L=14) -> 5e-9 (L=20). Collapses cleanly with
+  range, so it is tail-truncation, not a bug
+- Cause is a real model property: Kou's double-exponential tails are fatter than
+  Merton's Gaussian or Heston's, so the COS domain [a,b] must be wider to capture
+  them. Fixed the test with L=14. The fat-tail intuition shows up concretely as a
+  wider required integration domain
+- Practical consequence for Thursday: Kou calibration should use L=14-15, since
+  the deep put wing (the fat-tail region) is exactly where the default L=10 would
+  carry this error, right where we care most
+
+#### Kou vs Merton vs BSM smile (in notebook)
+- All three share diffusion vol 0.20, so differences are pure jump structure.
+  BSM flat (priced+inverted, not drawn). Both jump models skew; agree near the
+  money, diverge in the wings
+- Kou sits above Merton in both wings and its left wing lifts more than its
+  right: fatter tails (double-exponential > Gaussian jump) and asymmetric tail
+  shape (p<0.5, eta2<eta1). The two things Kou buys over Merton, made visual,
+  and visible only in the tails where the jump distributions differ
+- Caveat noted for Thursday: hand-picked params show what Kou CAN do, not what
+  the market wants. More params always fit better, so the real test is whether
+  Kou's improvement over Merton is meaningful with sensible params, not
+  overfitting
+
+### Day 36 - Fri Aug 28
+
+W7 calibration payoff: fit Merton and Kou to the real 29 DTE SPX slice, the
+empirical question that opened the week. Result more nuanced than expected;
+methodology (reading the fit) is the real lesson. Full analysis in the notebook.
+
+#### calibration/jumps.py
+- calibrate_merton, calibrate_kou: nonlinear least squares in IV space (price
+  strip via COS, invert to BSM IV, fit to market IV), mirroring calibrate_sabr.
+  Shared _model_ivs and _calibrate_jump helpers; per-model residual/bounds
+- Forward-consistent pricing: S0=F, r=q=R so the internal forward equals the
+  parity forward, invert with b=0. Untrusted spot never enters
+- Kou bounds enforce eta1 > 1 (the Wed constraint, at the calibration layer so
+  the pricer's ValueError guard never fires), L=14 for fat-tail wing accuracy
+- Caught a copy-paste-divergence bug in calibrate_kou's RMSE block (unpacked 5
+  Kou params into 4 Merton names, called the pricer with Merton args, returned
+  MertonParams). The exact hazard of Kou being a near-twin, caught in review
+
+#### The result: read the fit, not the raw number
+- Merton unweighted rmse 3.19 vol pts, Kou 2.20. Looked like both struggle. Fit
+  plot: both track the smile perfectly from the money to k~-0.15, then miss the
+  4 deepest puts badly (15 vol pts at k=-0.40)
+- Checked spreads before concluding: the 2 deepest points have 26.7% and 21.1%
+  bid-ask spreads (bid 0.65 / ask 0.85). Near-untradeable. Their high IV is
+  largely quote noise; a fit that nailed them would be overfitting
+- WEIGHTED rmse (inverse-variance, what the optimizer actually minimized):
+  Merton 0.30, Kou 0.20 vol pts. Both fit the LIQUID smile excellently,
+  comparable to SVI/SABR. The unweighted alarm was 2 illiquid quotes, not model
+  failure. Lesson: report weighted fit where data is trustworthy
+- Kou edges Merton even weighted (0.20 vs 0.30), so fatter tails buy a real gain
+  on trustworthy data. BUT the fit is degenerate: p=0.0065 (up-jump prob pinned
+  at ~0, near one-sided), and eta2 > eta1 (down thinner than up, opposite of
+  expected). A boundary-pinned parameter, same diagnostic as the pinned-rho bug.
+  So the 0.1 vol-pt edge comes from 2 extra params one of which collapsed to a
+  corner: close to overfitting
+
+#### Honest conclusion
+- Jumps DO answer the opening puzzle: both models capture the steep short-dated
+  skew (0.2-0.3 weighted vol pts) that pure-diffusion Heston flattens too fast
+- Neither is clearly preferred on this slice; Kou's edge is marginal and via a
+  degenerate one-sided fit. A cleaner comparison needs a more liquid/wider slice
+- Not a bug: the Kou pricer is certified (BSM limit, martingale, parity, COS-vs-
+  MC all green). Certified machinery + poor unweighted fit = the fit is the
+  finding, refined by weighting into a good fit on trustworthy data
+- Methodological lesson (the durable one): distinguished a model limitation from
+  a data-quality artifact by checking spreads and weighting; it flipped the
+  conclusion. Reading the fit mattered more than the fit. Belongs with the
+  pinned-rho and COS-normalization catches as a debugging/skepticism story
+
+### Day 37 - Mon Aug 31
+
+W7 close-out day: the two chosen deferred items (calendar_violation refinement,
+SABR beta sweep), both validated on real data, then merge and tag.
+
+#### calendar_violation refinement (data-region vs extrapolation split)
+- The check flagged all crossings anywhere on k_grid, including where slices
+  extrapolate. Refined to distinguish crossings IN-DATA (both slices have quotes
+  there, a real arbitrage) from crossings in the extrapolation region (SVI
+  guessing, far less alarming). Same data-vs-extrapolation logic as verify_fit
+- fit_surface now optionally returns each slice's k-range (return_ranges=True),
+  keyed by tau; calendar_violation takes an optional data_ranges dict and
+  returns a 3-tuple (max_violation_all, W, max_violation_in_data). The in-data
+  value uses the OVERLAP of each adjacent maturity pair's data ranges as the
+  mask. data_ranges=None keeps the old behaviour (NaN for the in-data value)
+- Validated on a real 3-maturity SPX surface (46/81/91d, relaxed staleness):
+  max_violation (all k) = 0, max_violation (in-data) = 0. Clean nested surface,
+  nothing to split, so the refinement correctly agrees with the unrefined check.
+  The k-ranges show it WOULD matter: 46d covers to k=0.101, 81d to k=0.149, so
+  the right wing past 0.101 is in-data for 81d but extrapolation for 46d. The
+  machinery is ready to draw that line; this surface just doesn't need it
+- rho term structure textbook again: -0.892 (46d), -0.821 (81d), -0.825 (91d)
+
+#### SABR beta sweep (beta non-identifiability, demonstrated)
+- Fit SABR at beta in {0, 0.5, 1} to the same real slice (2026-10-16, 433
+  strikes). Result: all three fits visually overlay the market, RMSE 0.26/0.33/
+  0.41 vol pts (all excellent, barely beta-dependent)
+- alpha scales exactly as F^(1-beta): 935 (b=0), 10.6 (b=0.5), 0.120 (b=1).
+  Check: 0.120 * F = 928 ~ 935, and 0.120 * sqrt(F) = 10.6, spot on. alpha is
+  the same vol wearing different units per beta
+- rho and nu stay nearly flat across beta (rho ~-0.55 to -0.58, nu ~2.5 to 2.7).
+  So alpha absorbs the beta-units change, rho/nu carry the shape. This is the
+  beta-rho identifiability from W6: one smile does not pin beta, comparably good
+  fits at any beta, which is WHY practitioners fix beta a priori. Asserted in
+  W6, now shown on real data
+- Bug caught by the sweep: calibrate_sabr's alpha bounds were [1e-6, 5], written
+  for beta=1. At beta=0, x0's alpha ~ atm_iv * F ~ 1000, outside the bound, so
+  least_squares raised "initial guess outside bounds". Fixed: alpha upper bound
+  now 5 * F**(1-beta), tracking alpha's scale per beta. Only surfaced now because
+  beta had always been fixed at 1 before, the sweep exercised beta != 1 for the
+  first time
+
+#### Data-freshness detour (Monday papercut)
+- All expiries came back 0c/0p after cleaning. Localized via the verbose funnel:
+  everything survived to the staleness filter, which dropped all rows. Monday
+  pull of Fri-close delayed data is ~3 days stale, past the 2-day default
+- Not a bug, the filter working as designed on stale data. Threaded
+  max_staleness_days through build_slice and fit_surface (both forward it to
+  clean_chain) so today's work could use a relaxed 7-day window on real quotes
+- The build_slice illiquidity guard (added last Mon) fired correctly throughout:
+  "expiry X too illiquid, 0 common strikes, F=nan" instead of a cryptic NaN
+  crash. Fail-loud paying off
+
+#### W7 sealed
+- Full test suite green, merge feature/week-07-jumps --no-ff, tag v0.7-week7
+- Week delivered: COS refactored model-agnostic; Merton + Kou char funcs,
+  cumulants, simulators, all validation gates (BSM limit, martingale, cumulant
+  reduction, parity, COS-vs-MC) green; jump calibration to real SPX with the
+  honest weighted-vs-unweighted finding (both fit liquid data to 0.2-0.3 vol
+  pts; Kou's edge via a degenerate p~0 one-sided fit); calendar refinement and
+  beta sweep as bonus. Neither pure jump model fully captures the deepest
+  (noisy) downside, motivating Bates next week
+
+#### Deferred (carried forward, non-blocking)
+- Staleness filter: 2-day default wipes Monday/off-hours pulls. Make it
+  business-day-aware or default more forgiving. Cost time twice now (W6 and
+  today's variant)
+- SVI: continuation lam-ramping, svi_density, svi_smile_interpolator (still a
+  stub). SABR beta sweep done; SSVI if independent fits ever cross
+- r hardcoded 0.045 (FRED short-tenor rate, run locally, sketched)
+
+#### Next (W8): Bates model
+- Heston + Merton jumps: stochastic vol for the term structure, jumps for the
+  short-dated tail. Directly motivated by W7's finding that neither pure jump
+  model (constant-vol diffusion + jumps) fully reaches the steep short-dated
+  skew. Reuses the model-agnostic COS core: Bates char func = Heston char func *
+  Merton jump factor (independence, the same multiply-the-char-funcs structure)
+
+#### Pace
+W7 complete and sealed on schedule. Both deferred items done and validated on
+real data. The beta sweep even caught a latent alpha-bounds bug. Clean close.
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
@@ -1161,6 +1457,7 @@ completing the SVI arbitrage-free-surface pipeline, then merge and tag.
 - All Day 16–20 work pushed to `feature/week-04-heston` branch on GitHub
 - All Day 21–25 work pushed to `feature/week-05-fourier-pricing` branch on GitHub
 - All Day 26–32 work pushed to `feature/week-06-heston-calibration` branch on GitHub
+- All Day 33–37 work pushed to `feature/week-07-jumps` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - **Phase 3 note**: adopt QuantLib (conda-forge `quantlib`) as the production pricing
   reference - cross-validate own pricers against it, and lean on it for the pricing layer
