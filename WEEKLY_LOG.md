@@ -1428,6 +1428,80 @@ SABR beta sweep), both validated on real data, then merge and tag.
   beta sweep as bonus. Neither pure jump model fully captures the deepest
   (noisy) downside, motivating Bates next week
 
+## Week 8 (Sep 1 - Sep 7): Bates - Heston + Jumps
+
+### Day 38 - Tue Sep 1
+
+W8 opens: Bates. Branch `feature/week-08-bates` off main. Theory day plus the
+model code written (validation and notebook demos tomorrow).
+
+#### Concept
+- Bates = Heston stochastic variance + Merton jumps. The division of labour
+  answers both earlier failures: stochastic vol gives the term structure Heston
+  had but jumps lacked; jumps give the steep short-dated skew Heston (Markovian,
+  mean-reverting) flattens too fast. Directly motivated by W7's finding that
+  neither pure jump model reached the 29 DTE skew without degenerating
+- Eight parameters: Heston's $v_0, \kappa_v, \theta, \xi, \rho$ plus Merton's
+  $\lambda, \mu_J, \delta_J$. Richness is the point but foreshadows an
+  identifiability tension (jumps and diffusion both add short-dated variance)
+
+#### Char func: composition via independence
+- Diffusion+stoch-vol and jumps are independent, so char funcs multiply:
+  $\phi_{\text{Bates}}(u) = \phi_{\text{Heston}}(u)\,\phi_{\text{jump}}(u)$. The
+  jump factor is exactly Merton's,
+  $\exp(\lambda\tau[e^{iu\mu_J - \frac12 u^2\delta_J^2} - 1])$. Nothing
+  re-derived; Bates is a composition of two certified pieces
+
+#### The one subtlety: compensator placement
+- Cannot just multiply two *standalone* char funcs, both carry an $(r-q)$ drift,
+  so the product would double-count it. Martingale condition
+  $\phi(-i) = S_0 e^{(r-q)\tau}$ fixes the allowed drift
+- Clean assembly: Heston (carrying $(r-q)$) $\times$ explicit compensator
+  $e^{iu(-\lambda\kappa_J\tau)}$ $\times$ pure jump factor. So $(r-q)$ appears
+  once (Heston), $-\lambda\kappa_J$ once (explicit), $\kappa_J = e^{\mu_J + \frac12\delta_J^2} - 1$
+- Reuse: `heston_char_func` directly, passing $(r-q)$ into its $r$-slot (legal,
+  its drift is a lone $r\,iu\,\tau$ term, nothing else rides on $r$).
+  `merton_char_func` NOT reused wholesale (its drift double-counts); only the
+  jump factor + explicit compensator
+- Notation clash settled: Heston mean-reversion $\kappa_v$ vs jump compensator
+  $\kappa_J$, kept distinct in code (`kappa_v`, `kappa_j`) to avoid a silent mixup
+
+#### Cumulants
+- Add (independence -> log char funcs add):
+  $c_1 = c_1^{\text{Heston}}(r-q) + \lambda\tau\mu_J - \lambda\kappa_J\tau$,
+  $c_2 = c_2^{\text{Heston}} + \lambda\tau(\mu_J^2 + \delta_J^2)$. The $\mu_J^2$
+  in $c_2$ is the compound-Poisson $E[Y^2]$; dropping it narrows the range.
+  Bates has BOTH fat-tail sources, so more truncation-hungry than either parent,
+  default wrapper $N=256, L=12$, to be validated
+
+#### Written today
+- `models/bates.py`: `bates_char_func`, `bates_cumulants`
+- `pricing/fourier.py`: `bates_cos_price` wrapper
+- Relocated `heston_cumulants` to `models/heston.py` so `bates.py` reuses it
+  without a circular import through `fourier.py`
+
+#### Notebook
+- Bates theory notebook written learning-style `14_bates_model.ipynb` (composition, compensator
+  placement, cumulants-add, why Bates should beat both halves). Code cells
+  stubbed for tomorrow
+
+#### Tomorrow
+- `pytest` the Bates gates, ground-truth-first. Two parent-reduction limits make
+  a stronger test than one: $\lambda\to0$ must recover Heston, and
+  $\xi\to0, v_0=\theta$ must recover Merton at $\sigma=\sqrt{\theta}$. Plus
+  martingale $\phi(-i)$, $\phi(0)=1$, and COS-vs-MC (Heston QE variance +
+  compound Poisson jumps as independent ground truth). Truncation sweep for the
+  needed $N, L$
+- Then notebook demos
+
+#### Rest of week
+- Variance Gamma (pure-jump, infinite-activity contrast), then cross-model
+  benchmarking (Heston / Merton / Kou / Bates / VG on the same surface)
+
+#### Pace
+On track. Bates is mostly composition of certified W4 + W7 pieces, so the model
+code went fast; the real work tomorrow is validation and the two-parents check
+
 #### Deferred (carried forward, non-blocking)
 - Staleness filter: 2-day default wipes Monday/off-hours pulls. Make it
   business-day-aware or default more forgiving. Cost time twice now (W6 and
@@ -1435,17 +1509,6 @@ SABR beta sweep), both validated on real data, then merge and tag.
 - SVI: continuation lam-ramping, svi_density, svi_smile_interpolator (still a
   stub). SABR beta sweep done; SSVI if independent fits ever cross
 - r hardcoded 0.045 (FRED short-tenor rate, run locally, sketched)
-
-#### Next (W8): Bates model
-- Heston + Merton jumps: stochastic vol for the term structure, jumps for the
-  short-dated tail. Directly motivated by W7's finding that neither pure jump
-  model (constant-vol diffusion + jumps) fully reaches the steep short-dated
-  skew. Reuses the model-agnostic COS core: Bates char func = Heston char func *
-  Merton jump factor (independence, the same multiply-the-char-funcs structure)
-
-#### Pace
-W7 complete and sealed on schedule. Both deferred items done and validated on
-real data. The beta sweep even caught a latent alpha-bounds bug. Clean close.
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
@@ -1458,6 +1521,7 @@ real data. The beta sweep even caught a latent alpha-bounds bug. Clean close.
 - All Day 21–25 work pushed to `feature/week-05-fourier-pricing` branch on GitHub
 - All Day 26–32 work pushed to `feature/week-06-heston-calibration` branch on GitHub
 - All Day 33–37 work pushed to `feature/week-07-jumps` branch on GitHub
+- All Day 38–42 work pushed to `feature/week-08-bates` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - **Phase 3 note**: adopt QuantLib (conda-forge `quantlib`) as the production pricing
   reference - cross-validate own pricers against it, and lean on it for the pricing layer
