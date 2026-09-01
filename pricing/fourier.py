@@ -1,6 +1,7 @@
 import numpy as np
-from models.heston import heston_char_func  # you'll need this once you get to the COS pricer itself
+from models.heston import heston_char_func, heston_cumulants  # you'll need this once you get to the COS pricer itself
 from models.merton import merton_char_func, merton_cumulants
+from models.bates import bates_char_func, bates_cumulants
 from models.kou import kou_char_func, kou_cumulants
 from typing import Literal
 
@@ -111,27 +112,6 @@ def cos_truncation_range(c1: float, c2: float, L: float = 10.0, c4: float = 0) -
 # Signatures unchanged so existing callers (tests, notebooks) keep working.
 # ---------------------------------------------------------------------------
 
-def heston_cumulants(
-    S0: float, v0: float,
-    kappa: float, theta: float, xi: float, rho: float, r: float,
-    tau: float,
-) -> tuple[float, float]:
-    """First and second cumulants of ln(S_T) under Heston, closed form."""
-    ekt = np.exp(-kappa * tau)
-    ekt2 = ekt ** 2
-
-    c1 = np.log(S0) + (r - 0.5 * theta) * tau + (theta - v0) * (1 - ekt) / (2 * kappa)
-
-    term1 = xi * tau * kappa * ekt * (v0 - theta) * (8 * kappa * rho - 4 * xi)
-    term2 = kappa * rho * xi * (1 - ekt) * (16 * theta - 8 * v0)
-    term3 = 2 * theta * kappa * tau * (-4 * kappa * rho * xi + xi**2 + 4 * kappa**2)
-    term4 = xi**2 * ((theta - 2 * v0) * ekt2 + theta * (6 * ekt - 7) + 2 * v0)
-    term5 = 8 * kappa**2 * (v0 - theta) * (1 - ekt)
-
-    c2 = (term1 + term2 + term3 + term4 + term5) / (8 * kappa**3)
-    return c1, c2
-
-
 def _heston_phi_vals(S0, v0, kappa, theta, xi, rho, r, tau, a, b, N):
     """Evaluate the Heston char func at the COS frequencies u_k."""
     k = np.arange(N)
@@ -180,7 +160,7 @@ def merton_cos_price(
     return cos_price_from_cf(phi_vals, a, b, r, T, K, N, option_type)
 
 # ---------------------------------------------------------------------------
-# Merton WRAPPERS.
+# Kou WRAPPERS.
 # ---------------------------------------------------------------------------
 def kou_cos_price(
     S0: float, r: float, q: float, T: float,
@@ -193,3 +173,40 @@ def kou_cos_price(
     u_k = k * np.pi / (b - a)
     phi_vals = kou_char_func(u_k, S0, r, q, T, sigma, lam, p, eta1, eta2)
     return cos_price_from_cf(phi_vals, a, b, r, T, K, N, option_type)
+
+# ---------------------------------------------------------------------------
+# Bates WRAPPERS.
+# ---------------------------------------------------------------------------
+
+def bates_cos_price(
+    S0: float,
+    v0: float,
+    kappa_v: float,
+    theta: float,
+    xi: float,
+    rho: float,
+    r: float,
+    q: float,
+    tau: float,
+    K: float,
+    lam: float,
+    mu_j: float,
+    delta_j: float,
+    option_type: Literal['call', 'put'] = 'call',
+    N: int = 256,
+    L: float = 12.0,
+) -> float:
+    """European option price under Bates via COS.
+
+    N=256, L=12 by default: Bates carries both stochastic-vol and jump fat
+    tails, so it is more truncation-hungry than either alone. Validate the
+    needed values rather than trusting these.
+    """
+    c1, c2 = bates_cumulants(S0, v0, kappa_v, theta, xi, rho, r, q, tau,
+                             lam, mu_j, delta_j)
+    a, b = cos_truncation_range(c1, c2, L)
+    k = np.arange(N)
+    u_k = k * np.pi / (b - a)
+    phi_vals = bates_char_func(u_k, S0, v0, kappa_v, theta, xi, rho, r, q, tau,
+                               lam, mu_j, delta_j)
+    return cos_price_from_cf(phi_vals, a, b, r, tau, K, N, option_type)
