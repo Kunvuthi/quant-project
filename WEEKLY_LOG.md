@@ -1485,22 +1485,69 @@ model code written (validation and notebook demos tomorrow).
   placement, cumulants-add, why Bates should beat both halves). Code cells
   stubbed for tomorrow
 
-#### Tomorrow
-- `pytest` the Bates gates, ground-truth-first. Two parent-reduction limits make
-  a stronger test than one: $\lambda\to0$ must recover Heston, and
-  $\xi\to0, v_0=\theta$ must recover Merton at $\sigma=\sqrt{\theta}$. Plus
-  martingale $\phi(-i)$, $\phi(0)=1$, and COS-vs-MC (Heston QE variance +
-  compound Poisson jumps as independent ground truth). Truncation sweep for the
-  needed $N, L$
-- Then notebook demos
+### Day 39 - Wed Sep 2
 
-#### Rest of week
+Bates validated end to end and demoed. All gates green, model certified.
+
+#### Import fix
+- `models/bates.py` still imported `heston_cumulants` from `pricing.fourier`
+  (its old home), creating a circular import once `fourier` imports `bates`.
+  Fixed: import from `models.heston` (relocated yesterday). Graph now acyclic,
+  `fourier` depends on models, models don't depend on `fourier`
+
+#### Validation (test_fourier.py::TestBates, 7 tests, all green)
+- Martingale $\phi(-i) = S_0 e^{(r-q)\tau}$: exact, certifies compensator placement
+- $\phi(0) = 1$
+- Heston limit ($\lambda \to 0$): exact to machine precision ($1.3\times10^{-14}$)
+  AT $q=0$. Key debugging finding: the first comparison was off by
+  $3\times10^{-2}$, immovable under both $N$ and $L$ sweeps (so not truncation).
+  Isolated it by checking cumulants (matched), then char funcs (matched
+  bit-for-bit), which localized it to discounting. Cause: `cos_call_price` has a
+  single $r$ argument used for BOTH drift and discount, so feeding it $r-q$
+  discounted at $r-q$ (wrong). Bates correctly separates drift ($r-q$) from
+  discount ($r$). Not a Bates bug, a flawed test, you cannot validate a
+  dividend-aware model against a pricer that conflates drift and discount. $q=0$
+  is the fair comparison
+- Merton limit ($\xi \to 0$, $v_0 = \theta$): matches Merton at $\sigma=\sqrt\theta$
+  to $2\times10^{-5}$. The second parent-reduction, a composition bug would break
+  one of the two collapses, so testing both is strong certification
+- Cumulant reduction to Heston at $\lambda=0$, put-call parity, and COS-vs-MC
+  (Heston QE variance + compound-Poisson jumps, $z < 3$) all pass
+- `bates_simulate_terminal`: reuses `simulate_heston_paths` with adjusted drift
+  $r \to r - q - \lambda\kappa_J$ (legal, its drift is a lone $r\,dt$ term), plus
+  Merton jumps added terminally. Same $\kappa_J$ as the char func, so MC and COS
+  describe the identical process
+
+#### Demos
+- Sample paths: continuous stochastic-vol wiggle (amplitude breathing with $v_t$)
+  punctuated by discrete downward-leaning jumps. The two mechanisms visible in
+  one picture
+- Bates vs Heston smiles at 29d and 182d: jumps steepen the short-dated smile
+  dramatically (change its shape, not just level, gap largest in the wings),
+  and the two converge at longer tenor as diffusion variance dominates. The term
+  structure of skew steepness (violent short, gentle long) that neither parent
+  produces alone. Closes the W7 puzzle visually
+
+#### Truncation sweep (the validation gap we'd planned and skipped)
+- Confirmed defaults and found a real trade-off. $N$: converged by 128, plateaus
+  after (error then set by range, not resolution); default 256 fine. $L$:
+  improves $8\to16$ then WORSENS at 20, the range-resolution trade-off (wider
+  captures more tail but coarsens resolution at fixed $N$). Optimum $\approx 16$;
+  default $L=12$ gives $2.4\times10^{-9}$ parity, more than adequate
+- Lesson: Kou taught too-narrow clips the tail; Bates shows too-wide starves
+  resolution. Fix for a slightly-off wing is more $N$, not reflexively more $L$
+
+#### Tomorrow / rest of week
 - Variance Gamma (pure-jump, infinite-activity contrast), then cross-model
-  benchmarking (Heston / Merton / Kou / Bates / VG on the same surface)
+  benchmark (Heston / Merton / Kou / Bates / VG on the same real surface), then
+  the Bates calibration to real SPX with the identifiability question (8 params,
+  jumps and diffusion both add short-dated variance, so partly redundant)
 
 #### Pace
-On track. Bates is mostly composition of certified W4 + W7 pieces, so the model
-code went fast; the real work tomorrow is validation and the two-parents check
+On track. Bates certified and demoed; the model was mostly composition of
+certified W4 + W7 pieces, so speed came from reuse. The one real debugging
+episode (the $q$/discount conflation in the Heston-limit test) was a test flaw
+not a model bug, isolated cleanly by the cumulants-then-charfuncs narrowing
 
 #### Deferred (carried forward, non-blocking)
 - Staleness filter: 2-day default wipes Monday/off-hours pulls. Make it
