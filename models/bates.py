@@ -1,7 +1,7 @@
 import numpy as np
-from models.heston import heston_char_func
-from pricing.fourier import heston_cumulants
-
+from models.heston import (
+heston_char_func, heston_cumulants, simulate_heston_paths
+)
 
 def bates_char_func(
     u: np.ndarray,
@@ -76,3 +76,35 @@ def bates_cumulants(
     c2 = c2_h + lam * tau * (mu_j**2 + delta_j**2)
 
     return c1, c2
+
+def bates_simulate_terminal(
+    S0: float, v0: float,
+    kappa_v: float, theta: float, xi: float, rho: float,
+    r: float, q: float, tau: float,
+    lam: float, mu_j: float, delta_j: float,
+    n_paths: int, n_steps: int,
+    seed: int | None = None,
+) -> np.ndarray:
+    """Terminal prices under Bates: Heston QE variance/price path with the
+    jump-compensated drift, plus compound-Poisson jumps added to the log-price.
+
+    Reuses simulate_heston_paths with adjusted drift r -> (r - q - lam*kappa_j),
+    legal because that simulator's drift is a lone r*dt term. Jumps are added
+    to the terminal log-price. Same kappa_j as bates_char_func, so the simulated
+    process matches the char func exactly (required for a valid COS-vs-MC check).
+    """
+    rng = np.random.default_rng(seed)
+    kappa_j = np.exp(mu_j + 0.5 * delta_j**2) - 1.0
+
+    # Heston part with the Bates diffusion drift folded into r
+    r_adj = r - q - lam * kappa_j
+    S_paths, _ = simulate_heston_paths(
+        S0, v0, kappa_v, theta, xi, rho, r_adj, tau, n_steps, n_paths, rng=rng
+    )
+    log_ST_heston = np.log(S_paths[:, -1])
+
+    # compound-Poisson jumps: N per path, sum ~ Normal(N*mu_j, N*delta_j^2)
+    N = rng.poisson(lam * tau, size=n_paths)
+    jump_sum = rng.normal(loc=N * mu_j, scale=np.sqrt(N) * delta_j)
+
+    return np.exp(log_ST_heston + jump_sum)
