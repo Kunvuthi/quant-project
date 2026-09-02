@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from models.heston import simulate_heston_paths
+from models.heston import simulate_heston_paths, heston_cumulants
 from models.bsm import bsm_price
 from models.merton import (
     merton_char_func, merton_cumulants
@@ -8,14 +8,16 @@ from models.merton import (
 from models.kou import (
     kou_char_func, kou_cumulants
 )
-from pricing.fourier import kou_cos_price
+from models.bates import (
+bates_char_func, bates_cumulants, bates_simulate_terminal
+)
 from pricing.fourier import (
-    cos_call_price, cos_put_price, cos_smile
+    cos_call_price, cos_put_price, cos_smile, bates_cos_price, merton_cos_price, kou_cos_price
 )
 from pricing.carr_madan import (
     carr_madan_call_prices, carr_madan_put_prices
 )
-from pricing.fourier import merton_cos_price
+
 S0, v0 = 100.0, 0.04
 kappa, theta, xi, rho, r = 2.0, 0.04, 0.3, -0.7, 0.05
 T, K = 0.5, 100.0
@@ -269,3 +271,89 @@ class TestKou:
         z = abs(cos_p - mc_price) / mc_se
         assert z < 3.0, f"COS={cos_p:.4f}, MC={mc_price:.4f}+/-{mc_se:.4f}, z={z:.2f}"
     
+class TestBates:
+    # distinct values, q and lam nonzero to exercise dividends and jumps,
+    # mu_j < 0 for equity-skew direction
+    S0, v0 = 100.0, 0.04
+    KAPPA_V, THETA, XI, RHO = 2.0, 0.04, 0.3, -0.7
+    R, Q, TAU = 0.03, 0.01, 0.5
+    LAM, MU_J, DELTA_J = 0.5, -0.10, 0.15
+
+    def test_martingale(self):
+        """phi(-i) = S0 e^{(r-q)tau}: certifies (r-q) once, -lam*kappa_j once."""
+        phi = bates_char_func(np.array([-1j]), self.S0, self.v0, self.KAPPA_V,
+                              self.THETA, self.XI, self.RHO, self.R, self.Q,
+                              self.TAU, self.LAM, self.MU_J, self.DELTA_J)[0]
+        expected = self.S0 * np.exp((self.R - self.Q) * self.TAU)
+        assert np.isclose(phi.real, expected, atol=1e-8)
+        assert np.isclose(phi.imag, 0.0, atol=1e-8)
+
+    def test_char_func_at_zero(self):
+        phi = bates_char_func(np.array([0.0 + 0j]), self.S0, self.v0, self.KAPPA_V,
+                              self.THETA, self.XI, self.RHO, self.R, self.Q,
+                              self.TAU, self.LAM, self.MU_J, self.DELTA_J)[0]
+        assert np.isclose(phi, 1.0, atol=1e-12)
+
+    def test_heston_limit(self):
+        """lam -> 0 recovers Heston. Compared at q=0 so drift and discount both
+        equal r, matching cos_call_price's single-r convention (a dividend-aware
+        model cannot be checked against a pricer that conflates drift and
+        discount, so q=0 is the fair comparison)."""
+        for K in (90.0, 100.0, 110.0):
+            bates = bates_cos_price(self.S0, self.v0, self.KAPPA_V, self.THETA,
+                                    self.XI, self.RHO, self.R, 0.0, self.TAU, K,
+                                    lam=0.0, mu_j=self.MU_J, delta_j=self.DELTA_J)
+            heston = cos_call_price(self.S0, self.v0, self.KAPPA_V, self.THETA,
+                                    self.XI, self.RHO, self.R, self.TAU, K)
+            assert np.isclose(bates, heston, atol=1e-8), (K, bates, heston)
+
+    def test_merton_limit(self):
+        """xi -> 0, v0 = theta recovers Merton at sigma = sqrt(theta): the
+        stochastic-vol side collapses to constant vol, leaving the jumps."""
+        xi_small = 1e-4
+        for K in (90.0, 100.0, 110.0):
+            bates = bates_cos_price(self.S0, self.THETA, self.KAPPA_V, self.THETA,
+                                    xi_small, self.RHO, self.R, self.Q, self.TAU, K,
+                                    self.LAM, self.MU_J, self.DELTA_J)
+            merton = merton_cos_price(self.S0, self.R, self.Q, self.TAU,
+                                      np.sqrt(self.THETA), self.LAM, self.MU_J,
+                                      self.DELTA_J, K, "call")
+            assert np.isclose(bates, merton, atol=1e-3), (K, bates, merton)
+
+    def test_cumulants_reduce_to_heston_when_lam_zero(self):
+        """At lam=0 the jump cumulant terms vanish, leaving Heston(r-q)."""
+        c1_b, c2_b = bates_cumulants(self.S0, self.v0, self.KAPPA_V, self.THETA,
+                                     self.XI, self.RHO, self.R, self.Q, self.TAU,
+                                     0.0, self.MU_J, self.DELTA_J)
+        c1_h, c2_h = heston_cumulants(self.S0, self.v0, self.KAPPA_V, self.THETA,
+                                      self.XI, self.RHO, self.R - self.Q, self.TAU)
+        assert np.isclose(c1_b, c1_h, atol=1e-12)
+        assert np.isclose(c2_b, c2_h, atol=1e-12)
+
+    def test_put_call_parity(self):
+        K = 100.0
+        call = bates_cos_price(self.S0, self.v0, self.KAPPA_V, self.THETA, self.XI,
+                               self.RHO, self.R, self.Q, self.TAU, K, self.LAM,
+                               self.MU_J, self.DELTA_J, "call")
+        put = bates_cos_price(self.S0, self.v0, self.KAPPA_V, self.THETA, self.XI,
+                              self.RHO, self.R, self.Q, self.TAU, K, self.LAM,
+                              self.MU_J, self.DELTA_J, "put")
+        lhs = call - put
+        rhs = self.S0 * np.exp(-self.Q * self.TAU) - K * np.exp(-self.R * self.TAU)
+        assert np.isclose(lhs, rhs, atol=1e-4)
+
+    def test_cos_matches_mc(self):
+        """COS vs independent Monte Carlo (Heston QE variance + Poisson jumps),
+        z-score < 3. The full stochastic-vol-plus-jumps pricing test."""
+        K = 100.0
+        cos_p = bates_cos_price(self.S0, self.v0, self.KAPPA_V, self.THETA, self.XI,
+                                self.RHO, self.R, self.Q, self.TAU, K, self.LAM,
+                                self.MU_J, self.DELTA_J, "call")
+        ST = bates_simulate_terminal(self.S0, self.v0, self.KAPPA_V, self.THETA,
+                                     self.XI, self.RHO, self.R, self.Q, self.TAU,
+                                     self.LAM, self.MU_J, self.DELTA_J,
+                                     n_paths=1_000_000, n_steps=100, seed=42)
+        disc = np.exp(-self.R * self.TAU) * np.maximum(ST - K, 0.0)
+        mc_p, mc_se = disc.mean(), disc.std(ddof=1) / np.sqrt(len(ST))
+        z = abs(cos_p - mc_p) / mc_se
+        assert z < 3.0, f"COS={cos_p:.4f}, MC={mc_p:.4f}+/-{mc_se:.4f}, z={z:.2f}"
