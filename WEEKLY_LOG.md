@@ -1537,17 +1537,74 @@ Bates validated end to end and demoed. All gates green, model certified.
 - Lesson: Kou taught too-narrow clips the tail; Bates shows too-wide starves
   resolution. Fix for a slightly-off wing is more $N$, not reflexively more $L$
 
-#### Tomorrow / rest of week
-- Variance Gamma (pure-jump, infinite-activity contrast), then cross-model
-  benchmark (Heston / Merton / Kou / Bates / VG on the same real surface), then
-  the Bates calibration to real SPX with the identifiability question (8 params,
-  jumps and diffusion both add short-dated variance, so partly redundant)
+### Day 40 - Mon Sep 7
 
-#### Pace
-On track. Bates certified and demoed; the model was mostly composition of
-certified W4 + W7 pieces, so speed came from reuse. The one real debugging
-episode (the $q$/discount conflation in the Heston-limit test) was a test flaw
-not a model bug, isolated cleanly by the cumulants-then-charfuncs narrowing
+Back from a short break. W8 continues: Variance Gamma theory and notebook.
+Implementation tomorrow. (Bates was finished Wed: certified, demoed,
+truncation-swept.)
+
+#### VG concept
+- Pure-jump, no diffusion at all, unlike everything prior (BSM/Heston diffusion,
+  Merton/Kou/Bates diffusion+jumps). Infinite-activity: infinitely many jumps per
+  interval, almost all infinitesimal, a few large. Paths look near-continuous but
+  are pure jumps. Skew/kurtosis come from the jump-size distribution, not a
+  diffusion+jump split
+
+#### Subordination (the construction)
+- $X_t = \theta\Gamma_t + \sigma W_{\Gamma_t}$: Brownian motion run on a random
+  business-time clock $\Gamma_t$ (a Gamma process). Direction: calendar time $t$
+  is the DETERMINISTIC input; the clock outputs random business time
+  $\Gamma_t \sim$ Gamma(mean $t$, var $\nu t$); observe BM at that random time
+- "Subordination" names the hierarchy: the clock $\Gamma$ (subordinator) governs
+  the time at which $W$ is observed, so $W$ is subordinate to it. Clock must be
+  non-decreasing (time moves forward). Bochner's term
+- Economic story: markets don't experience time uniformly; busy periods = clock
+  races (big moves), quiet = clock crawls. Random clock turns uniform-variance BM
+  increments into fat-tailed variable-magnitude returns
+
+#### Three params
+- $\sigma$ scale, $\nu$ kurtosis (Gamma clock variance rate; $\nu\to0$ = pure BM),
+  $\theta$ skew (BM drift in business time; $\theta<0$ = equity left-skew)
+
+#### Distribution + char func
+- Conditional on clock $\Gamma_t=g$: return is $\mathcal{N}(\theta g, \sigma^2 g)$.
+  Actual distribution is a continuous MIXTURE of Gaussians, one per clock value,
+  weighted by the Gamma density. Variance-mixing (wide-clock draws overpopulate
+  tails) is where excess kurtosis comes from; $\theta$ making wide draws also more
+  negative is the skew
+- Char func via conditioning then averaging: $E_g[e^{gs}]$ with
+  $s = iu\theta - \frac12\sigma^2 u^2$ is the Gamma MGF, a POWER LAW, giving
+  $\phi_{VG}(u) = (1 - iu\theta\nu + \frac12\sigma^2\nu u^2)^{-t/\nu}$. Deep tidy
+  fact: the char func inherits the functional form of the driving randomness's MGF
+  (Poisson -> exp-of-exp for jump-diffusions; Gamma -> power law for VG). Simplest
+  char func of all the models
+- Martingale correction $\omega = \frac1\nu\log(1 - \theta\nu - \frac12\sigma^2\nu)$,
+  analogue of the jump compensator. Hides a constraint:
+  $1 - \theta\nu - \frac12\sigma^2\nu > 0$ (VG analogue of Kou's $\eta_1>1$)
+
+#### Benchmark framing
+- VG = 3 params, no diffusion, vs Bates's 8. Known to fit a single slice well but
+  struggle with term structure (skew/kurtosis decay with $t$ in a fixed way, no
+  stochastic vol to control it). Mirror image of Heston (term structure but too
+  little short-dated skew). Bates should get both. That contrast is why VG is in
+  the benchmark
+
+#### Notebook
+- VG theory notebook written inline (concept, subordination, mixture-of-Gaussians,
+  power-law char func, martingale/constraint, benchmark framing). Demos stubbed:
+  (1) mixture-of-Gaussians showing kurtosis from variance-mixing [centerpiece],
+  (2) nu/theta parameter sweeps, (3) VG smile term-structure weakness
+
+#### Tomorrow
+- Implement models/vg.py (vg_char_func, vg_cumulants, vg_simulate_terminal) and
+  vg_cos_price wrapper. Validation gates: nu->0 recovers BSM, martingale,
+  phi(0)=1, constraint enforcement, COS-vs-MC. Then the demos
+
+#### Rest of week
+- Cross-model benchmark (Heston/Merton/Kou/Bates/VG on one real surface), Bates
+  real-data calibration with the identifiability question, then close W8 (merge,
+  tag v0.8-week8). The Monday stale-feed papercut (2-day filter) still deferred;
+  use max_staleness_days=7 when pulling real data
 
 #### Deferred (carried forward, non-blocking)
 - Staleness filter: 2-day default wipes Monday/off-hours pulls. Make it
