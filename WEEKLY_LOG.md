@@ -1595,16 +1595,82 @@ truncation-swept.)
   (1) mixture-of-Gaussians showing kurtosis from variance-mixing [centerpiece],
   (2) nu/theta parameter sweeps, (3) VG smile term-structure weakness
 
-#### Tomorrow
-- Implement models/vg.py (vg_char_func, vg_cumulants, vg_simulate_terminal) and
-  vg_cos_price wrapper. Validation gates: nu->0 recovers BSM, martingale,
-  phi(0)=1, constraint enforcement, COS-vs-MC. Then the demos
+### Day 41 - Tue Sep 9
+
+VG implemented, certified, and demoed. Last new model of Phase 1. Theory and
+figures in the VG notebook.
+
+#### models/vg.py
+- vg_char_func: power-law form $\phi(u) = e^{iu(\ln S_0 + (r-q+\omega)T)}
+  (1 - iu\theta\nu + \frac12\sigma^2\nu u^2)^{-T/\nu}$, with martingale correction
+  $\omega = \frac1\nu\log(1 - \theta\nu - \frac12\sigma^2\nu)$. Constraint
+  $1 - \theta\nu - \frac12\sigma^2\nu > 0$ (omega finite), the VG analogue of
+  Kou's $\eta_1>1$; raises ValueError with the offending values
+- vg_cumulants: $c_1 = \ln S_0 + (r-q+\omega)T + \theta T$,
+  $c_2 = (\sigma^2 + \nu\theta^2)T$. Caught a dropped $\ln S_0$ in $c_1$ during
+  review (would mis-center the COS grid and price garbage, silent bug). omega
+  identical to the char func
+- vg_simulate_terminal: subordination sampling, draw Gamma clock
+  $g \sim \Gamma(\text{shape}=T/\nu, \text{scale}=\nu)$ (mean $T$, var $\nu T$),
+  then conditional return $\mathcal{N}(\theta g, \sigma^2 g)$. Exact (one clock
+  draw + one Gaussian), no path discretization, so no MC bias
+- vg_cos_price wrapper in fourier.py, default $N=256, L=12$
+
+#### Validation (test_fourier.py::TestVG, 7 tests, all green)
+- BSM limit ($\nu\to0$, deterministic clock -> pure BM), martingale $\phi(-i)$,
+  $\phi(0)=1$, constraint raise (confirmed it fires), $\theta=0$ gives
+  $c_2=\sigma^2 T$, put-call parity, COS-vs-MC ($z<3$) against the subordination
+  sampler. Parity held at default $L=12$, VG's power-law tails less
+  truncation-hungry than feared. Fifth model through the same certification
+  gauntlet, dropped into the model-agnostic COS core with no pricer changes
+
+#### Concept recap (the hard part of VG)
+- Subordination: calendar time $t$ is deterministic input; the Gamma clock
+  outputs random business time $\Gamma_t$; observe BM at that random time. "$W$
+  subordinate to the clock." Char func inherits the driving randomness's MGF
+  shape, Gamma MGF is a power law, hence VG's power-law char func (vs
+  jump-diffusions' exp-of-exp from Poisson)
+
+#### Demos
+- Mixture-of-Gaussians: return distribution is a probability-weighted blend of
+  conditional Gaussians $\mathcal{N}(\theta g, \sigma^2 g)$, one per clock value.
+  Peakier + fatter-tailed than a matched-variance Gaussian; variance-mixing IS
+  the excess kurtosis, $\theta$ tilting the wide draws IS the skew
+- Paths vs GBM: VG is near-deterministic drift over quiet-clock stretches
+  punctuated by lurches. $\nu$ dials VG from Brownian-like (small $\nu$, the
+  $\nu\to0$ limit the test confirmed) to jump-like (large $\nu$). Infinite
+  activity: diffuse when under-resolved, no clean isolated gaps unlike
+  finite-activity Merton/Bates
+- Density sweeps (Demo 2): clean isolation, $\nu$ with $\theta=0$ is pure
+  kurtosis (peak + tails grow), $\theta$ at fixed $\nu$ is pure skew (tilt only)
+- Smile across maturities (Demo 3, the benchmark thesis): short-dated smile a
+  deep sharply-curved V (steep skew + wing curvature a diffusion can't make),
+  flattening dramatically to nearly flat by $T=2$. Crucially the flattening rate
+  is NOT free, it is locked by the same $(\sigma,\nu,\theta)$ that set the
+  short-dated shape (skew ~ $\theta$, kurtosis ~ $\nu/T$). So VG cannot
+  independently control term structure. Mirror image of Heston: Heston has term
+  structure but flattens too fast at the SHORT end; VG has short-dated
+  skew/curvature but flattens too fast into the LONG end. Bates (both mechanisms)
+  should fit both ends
+
+#### Milestone
+- VG is the last new model of Phase 1. Full toolkit now built: BSM, binomial, MC,
+  Heston, Dupire local vol, Fourier pricers (COS + Carr-Madan), SVI, SABR,
+  Merton, Kou, Bates, VG. All certified
 
 #### Rest of week
-- Cross-model benchmark (Heston/Merton/Kou/Bates/VG on one real surface), Bates
-  real-data calibration with the identifiability question, then close W8 (merge,
-  tag v0.8-week8). The Monday stale-feed papercut (2-day filter) still deferred;
-  use max_staleness_days=7 when pulling real data
+- Cross-model benchmark: Heston / Merton / Kou / Bates / VG on one real SPX
+  surface. Expected (from Demo 3): VG fits a single slice well but the full
+  surface poorly; Bates fits both ends; each single-mechanism model fails at one
+- Bates real-data calibration with the identifiability question (8 params, jumps
+  and diffusion both add short-dated variance, partly redundant)
+- Then close W8: merge feature/week-08-bates --no-ff, tag v0.8-week8
+- Monday stale-feed papercut still deferred; use max_staleness_days=7 for real data
+
+#### Pace
+On track. VG certified and demoed, fifth model through the standard gauntlet, fast
+because of the reusable COS core. Synthesis (benchmark + Bates calibration) is
+what remains, no new models
 
 #### Deferred (carried forward, non-blocking)
 - Staleness filter: 2-day default wipes Monday/off-hours pulls. Make it
