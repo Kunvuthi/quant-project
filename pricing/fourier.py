@@ -1,8 +1,9 @@
 import numpy as np
 from models.heston import heston_char_func, heston_cumulants  # you'll need this once you get to the COS pricer itself
 from models.merton import merton_char_func, merton_cumulants
-from models.bates import bates_char_func, bates_cumulants
 from models.kou import kou_char_func, kou_cumulants
+from models.bates import bates_char_func, bates_cumulants
+from models.vg import vg_char_func, vg_cumulants
 from typing import Literal
 
 def _cos_chi(a: float, b: float, u_k: np.ndarray, x1: float, x2: float) -> np.ndarray:
@@ -210,3 +211,28 @@ def bates_cos_price(
     phi_vals = bates_char_func(u_k, S0, v0, kappa_v, theta, xi, rho, r, q, tau,
                                lam, mu_j, delta_j)
     return cos_price_from_cf(phi_vals, a, b, r, tau, K, N, option_type)
+
+# ---------------------------------------------------------------------------
+# Variance Gamma Model WRAPPERS.
+# ---------------------------------------------------------------------------
+
+def vg_cos_price(
+    S0: float,
+    r: float,
+    q: float,
+    T: float,
+    sigma: float,
+    nu: float,
+    theta: float,
+    K: float,
+    option_type: Literal['call', 'put'] = 'call',
+    N: int = 256,
+    L: float = 12.0,
+) -> float:
+    """European option price under Variance Gamma via COS."""
+    c1, c2 = vg_cumulants(S0, r, q, T, sigma, nu, theta)
+    a, b = cos_truncation_range(c1, c2, L)
+    k = np.arange(N)
+    u_k = k * np.pi / (b - a)
+    phi_vals = vg_char_func(u_k, S0, r, q, T, sigma, nu, theta)
+    return cos_price_from_cf(phi_vals, a, b, r, T, K, N, option_type)

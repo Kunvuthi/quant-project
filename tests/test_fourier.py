@@ -9,10 +9,13 @@ from models.kou import (
     kou_char_func, kou_cumulants
 )
 from models.bates import (
-bates_char_func, bates_cumulants, bates_simulate_terminal
+    bates_char_func, bates_cumulants, bates_simulate_terminal
+)
+from models.vg import (
+    vg_cumulants, vg_char_func, vg_simulate_terminal
 )
 from pricing.fourier import (
-    cos_call_price, cos_put_price, cos_smile, bates_cos_price, merton_cos_price, kou_cos_price
+    cos_call_price, cos_put_price, cos_smile, bates_cos_price, merton_cos_price, kou_cos_price, vg_cos_price
 )
 from pricing.carr_madan import (
     carr_madan_call_prices, carr_madan_put_prices
@@ -354,6 +357,69 @@ class TestBates:
                                      self.LAM, self.MU_J, self.DELTA_J,
                                      n_paths=1_000_000, n_steps=100, seed=42)
         disc = np.exp(-self.R * self.TAU) * np.maximum(ST - K, 0.0)
+        mc_p, mc_se = disc.mean(), disc.std(ddof=1) / np.sqrt(len(ST))
+        z = abs(cos_p - mc_p) / mc_se
+        assert z < 3.0, f"COS={cos_p:.4f}, MC={mc_p:.4f}+/-{mc_se:.4f}, z={z:.2f}"
+        
+class TestVG:
+    S0, R, Q, T = 100.0, 0.03, 0.01, 0.5
+    SIGMA, NU, THETA = 0.20, 0.40, -0.15
+
+    def test_bsm_limit(self):
+        """nu -> 0: deterministic clock, VG becomes pure Brownian motion = BSM.
+        theta=0, q=0 for the cleanest symmetric comparison. nu=1e-4 not 1e-6 to
+        avoid the 1/nu terms straining numerically."""
+        for K in (90.0, 100.0, 110.0):
+            vg = vg_cos_price(self.S0, self.R, 0.0, self.T, self.SIGMA,
+                              nu=1e-4, theta=0.0, K=K, option_type="call")
+            bsm = bsm_price(self.S0, K, self.T, self.R, self.SIGMA, "call")
+            assert np.isclose(vg, bsm, atol=1e-4), (K, vg, bsm)
+
+    def test_martingale(self):
+        """phi(-i) = S0 e^{(r-q)T}, certifies omega."""
+        phi = vg_char_func(np.array([-1j]), self.S0, self.R, self.Q, self.T,
+                           self.SIGMA, self.NU, self.THETA)[0]
+        expected = self.S0 * np.exp((self.R - self.Q) * self.T)
+        assert np.isclose(phi.real, expected, atol=1e-8)
+        assert np.isclose(phi.imag, 0.0, atol=1e-8)
+
+    def test_char_func_at_zero(self):
+        phi = vg_char_func(np.array([0.0 + 0j]), self.S0, self.R, self.Q, self.T,
+                           self.SIGMA, self.NU, self.THETA)[0]
+        assert np.isclose(phi, 1.0, atol=1e-12)
+
+    def test_constraint_raises(self):
+        """1 - theta*nu - 0.5*sigma^2*nu <= 0 must raise (omega diverges).
+        Force it with large positive theta and nu."""
+        with pytest.raises(ValueError):
+            vg_char_func(np.array([1.0 + 0j]), self.S0, self.R, self.Q, self.T,
+                         sigma=0.2, nu=5.0, theta=0.5)
+
+    def test_cumulants_symmetric_c2(self):
+        """At theta=0 the nu*theta^2 term vanishes, so c2 = sigma^2 T exactly."""
+        _, c2 = vg_cumulants(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                             self.NU, theta=0.0)
+        assert np.isclose(c2, self.SIGMA**2 * self.T, atol=1e-12)
+
+    def test_put_call_parity(self):
+        K = 100.0
+        call = vg_cos_price(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                            self.NU, self.THETA, K, "call")
+        put = vg_cos_price(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                           self.NU, self.THETA, K, "put")
+        lhs = call - put
+        rhs = self.S0 * np.exp(-self.Q * self.T) - K * np.exp(-self.R * self.T)
+        assert np.isclose(lhs, rhs, atol=1e-4)
+
+    def test_cos_matches_mc(self):
+        """COS vs independent Monte Carlo (Gamma clock + conditional Gaussian),
+        z-score < 3. The subordination sampler is the independent ground truth."""
+        K = 100.0
+        cos_p = vg_cos_price(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                             self.NU, self.THETA, K, "call")
+        ST = vg_simulate_terminal(self.S0, self.R, self.Q, self.T, self.SIGMA,
+                                  self.NU, self.THETA, n_paths=2_000_000, seed=42)
+        disc = np.exp(-self.R * self.T) * np.maximum(ST - K, 0.0)
         mc_p, mc_se = disc.mean(), disc.std(ddof=1) / np.sqrt(len(ST))
         z = abs(cos_p - mc_p) / mc_se
         assert z < 3.0, f"COS={cos_p:.4f}, MC={mc_p:.4f}+/-{mc_se:.4f}, z={z:.2f}"
