@@ -1595,7 +1595,7 @@ truncation-swept.)
   (1) mixture-of-Gaussians showing kurtosis from variance-mixing [centerpiece],
   (2) nu/theta parameter sweeps, (3) VG smile term-structure weakness
 
-### Day 41 - Tue Sep 9
+### Day 41 - Tue Sep 8
 
 VG implemented, certified, and demoed. Last new model of Phase 1. Theory and
 figures in the VG notebook.
