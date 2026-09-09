@@ -1653,32 +1653,87 @@ figures in the VG notebook.
   skew/curvature but flattens too fast into the LONG end. Bates (both mechanisms)
   should fit both ends
 
+### Day 42 - Wed Sep 9
+
+W8 final day: cross-model benchmark (the capstone), then close the branch.
+
+#### Calibrators written (calibration/jumps.py, kept there for now, tidy next week)
+- calibrate_vg, calibrate_heston, calibrate_bates, each a clone of the
+  calibrate_merton pattern over the shared _model_ivs / _calibrate_jump helpers
+- Forward convention: VG/Bates take q, so use (F, r, r) + rate-r inversion,
+  matching Merton/Kou. Heston has NO q and cos_call_price conflates drift and
+  discount into one rate, so it prices AND inverts at rate 0 (forward-measure,
+  undiscounted); IV is invariant to the discount convention as long as pricing
+  and inversion use the same rate. This is the drift-vs-discount subtlety that
+  produced the phantom gap in the Bates Heston-limit test on Day 39
+- Heston calibrator certified by synthetic recovery: generated a smile from known
+  Heston params, recovered all five EXACTLY (curve diff 0.0), so the rate
+  convention is right
+
+#### Data: thin feed today (Monday-ish staleness on a Wed pull)
+- Liquidity scan at max_staleness_days=7: only the 82d expiry (2026-11-30) was
+  healthy, 49 OTM strikes (12 common for the forward). Short liquid slices too
+  thin (30d had 10 common, 45/60d had 2). So the benchmark is a SINGLE 82d slice,
+  not multi-maturity. This matters: 82d is the gentle-smile regime, so it does
+  NOT stress the short-dated jump-vs-diffusion distinction that motivated the arc
+
+#### Benchmark result (five models, 82d slice, RMSE vol pts)
+- VG 1.76 (3p), Merton 1.31 (4p), Heston 0.91 (5p), Kou 0.73 (5p), Bates 0.34 (8p)
+- RMSE falls almost monotonically with parameter count, so the ranking is mostly
+  the "more params fit better" law, not truth
+- The fits coincide from the money out to k~-0.15, then fan apart in the deep-left
+  wing. The ENTIRE ranking lives in that wing, which is also the noisiest data
+  (widest-spread deep puts). So the contest is partly over who best fits noise
+
+#### The real finding: both low-RMSE winners degenerated
+- Bates params: xi=2.000 and lam=3.000 BOTH pinned at ceilings (max vol-of-vol AND
+  max jump intensity). 0.34 achieved by throwing every mechanism at the wing, not
+  a clean optimum
+- Kou params: p=0.0000 and eta1=49.998 BOTH pinned (up-jump prob at floor, up-rate
+  at ceiling) -> collapsed to a purely one-sided down-jump model. SAME degeneracy
+  as Kou's first real-data fit in W7 (p->0 there too). Repeatable, so it is a real
+  signal: the SPX smile wants crash-only (one-sided) jumps
+- So the two BEST-RMSE models both won via boundary-pinned degeneracy. The only
+  fits with fully interior, interpretable params were the SIMPLER models. Heston
+  (0.91, all interior, sensible) is the most TRUSTWORTHY fit despite sitting
+  mid-table. RMSE ranking and trustworthiness ranking are nearly inverted
+- Cleanest same-param signal: Kou (0.73) vs Heston (0.91), both 5p, so not a
+  flexibility artifact, BUT Kou's edge comes with two pinned params, so even that
+  is qualified
+
+#### Capstone lesson
+- Lower RMSE is not better if bought with pinned parameters. The pinned-parameter
+  red flag has now fired three times (pinned rho W6, p->0 W7, xi/lam + p/eta1 here).
+  "Check whether params sit at their bounds" is a first-class validation step
+- The regime set the scope: a gentle 82d slice can't test short-dated model
+  divergence; a proper benchmark needs multi-maturity + a short slice + a richer
+  feed (to constrain Bates's 8 params and expose VG's term-structure rigidity).
+  Today's result is real but narrow, and honest about being so
+
+#### Notebook
+- 16_cross_model_benchmark.ipynb: slice pull, five-model fit, RMSE table, params
+  printout, overlay plot, and markdown lessons (parameter-count caveat, the
+  boundary-pinning finding on both winners, the regime caveat, Kou's repeated
+  one-sided degeneracy). Capstone of the Bates/VG arc
+
+#### W8 closed
+- Full test suite green, merge feature/week-08-bates --no-ff, tag v0.8-week8
+
+#### Deferred (carried forward)
+- Move VG/Heston/Bates calibrators out of jumps.py into a properly-named module
+  (jumps.py now holds non-jump models too); tidy next week
+- Heston-Kou model: swap Kou's f_hat into the Bates composition, ~15 min, worth it
+  if Bates's Merton jumps underfit the downside
+- Proper multi-maturity benchmark on a richer feed (short + long slices), to
+  constrain Bates and expose VG term-structure rigidity
+- Staleness filter 2-day default wipes Monday/off-hours pulls (business-day aware
+  or more forgiving); use max_staleness_days=7 meanwhile
+- r hardcoded 0.045 (FRED short-tenor rate, run locally)
+
 #### Milestone
-- VG is the last new model of Phase 1. Full toolkit now built: BSM, binomial, MC,
-  Heston, Dupire local vol, Fourier pricers (COS + Carr-Madan), SVI, SABR,
-  Merton, Kou, Bates, VG. All certified
-
-#### Rest of week
-- Cross-model benchmark: Heston / Merton / Kou / Bates / VG on one real SPX
-  surface. Expected (from Demo 3): VG fits a single slice well but the full
-  surface poorly; Bates fits both ends; each single-mechanism model fails at one
-- Bates real-data calibration with the identifiability question (8 params, jumps
-  and diffusion both add short-dated variance, partly redundant)
-- Then close W8: merge feature/week-08-bates --no-ff, tag v0.8-week8
-- Monday stale-feed papercut still deferred; use max_staleness_days=7 for real data
-
-#### Pace
-On track. VG certified and demoed, fifth model through the standard gauntlet, fast
-because of the reusable COS core. Synthesis (benchmark + Bates calibration) is
-what remains, no new models
-
-#### Deferred (carried forward, non-blocking)
-- Staleness filter: 2-day default wipes Monday/off-hours pulls. Make it
-  business-day-aware or default more forgiving. Cost time twice now (W6 and
-  today's variant)
-- SVI: continuation lam-ramping, svi_density, svi_smile_interpolator (still a
-  stub). SABR beta sweep done; SSVI if independent fits ever cross
-- r hardcoded 0.045 (FRED short-tenor rate, run locally, sketched)
+- W8 done. Phase 1 pricing-model toolkit COMPLETE and certified: BSM, binomial,
+  MC, Heston, Dupire local vol, Fourier pricers (COS + Carr-Madan), SVI, SABR,
+  Merton, Kou, Bates, VG. Next: W9 (rough vol / rBergomi + Phase 1 write-up)
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
