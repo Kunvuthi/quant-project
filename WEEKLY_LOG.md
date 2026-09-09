@@ -1428,24 +1428,312 @@ SABR beta sweep), both validated on real data, then merge and tag.
   beta sweep as bonus. Neither pure jump model fully captures the deepest
   (noisy) downside, motivating Bates next week
 
-#### Deferred (carried forward, non-blocking)
-- Staleness filter: 2-day default wipes Monday/off-hours pulls. Make it
-  business-day-aware or default more forgiving. Cost time twice now (W6 and
-  today's variant)
-- SVI: continuation lam-ramping, svi_density, svi_smile_interpolator (still a
-  stub). SABR beta sweep done; SSVI if independent fits ever cross
-- r hardcoded 0.045 (FRED short-tenor rate, run locally, sketched)
+## Week 8 (Sep 1 - Sep 7): Bates - Heston + Jumps
 
-#### Next (W8): Bates model
-- Heston + Merton jumps: stochastic vol for the term structure, jumps for the
-  short-dated tail. Directly motivated by W7's finding that neither pure jump
-  model (constant-vol diffusion + jumps) fully reaches the steep short-dated
-  skew. Reuses the model-agnostic COS core: Bates char func = Heston char func *
-  Merton jump factor (independence, the same multiply-the-char-funcs structure)
+### Day 38 - Tue Sep 1
 
-#### Pace
-W7 complete and sealed on schedule. Both deferred items done and validated on
-real data. The beta sweep even caught a latent alpha-bounds bug. Clean close.
+W8 opens: Bates. Branch `feature/week-08-bates` off main. Theory day plus the
+model code written (validation and notebook demos tomorrow).
+
+#### Concept
+- Bates = Heston stochastic variance + Merton jumps. The division of labour
+  answers both earlier failures: stochastic vol gives the term structure Heston
+  had but jumps lacked; jumps give the steep short-dated skew Heston (Markovian,
+  mean-reverting) flattens too fast. Directly motivated by W7's finding that
+  neither pure jump model reached the 29 DTE skew without degenerating
+- Eight parameters: Heston's $v_0, \kappa_v, \theta, \xi, \rho$ plus Merton's
+  $\lambda, \mu_J, \delta_J$. Richness is the point but foreshadows an
+  identifiability tension (jumps and diffusion both add short-dated variance)
+
+#### Char func: composition via independence
+- Diffusion+stoch-vol and jumps are independent, so char funcs multiply:
+  $\phi_{\text{Bates}}(u) = \phi_{\text{Heston}}(u)\,\phi_{\text{jump}}(u)$. The
+  jump factor is exactly Merton's,
+  $\exp(\lambda\tau[e^{iu\mu_J - \frac12 u^2\delta_J^2} - 1])$. Nothing
+  re-derived; Bates is a composition of two certified pieces
+
+#### The one subtlety: compensator placement
+- Cannot just multiply two *standalone* char funcs, both carry an $(r-q)$ drift,
+  so the product would double-count it. Martingale condition
+  $\phi(-i) = S_0 e^{(r-q)\tau}$ fixes the allowed drift
+- Clean assembly: Heston (carrying $(r-q)$) $\times$ explicit compensator
+  $e^{iu(-\lambda\kappa_J\tau)}$ $\times$ pure jump factor. So $(r-q)$ appears
+  once (Heston), $-\lambda\kappa_J$ once (explicit), $\kappa_J = e^{\mu_J + \frac12\delta_J^2} - 1$
+- Reuse: `heston_char_func` directly, passing $(r-q)$ into its $r$-slot (legal,
+  its drift is a lone $r\,iu\,\tau$ term, nothing else rides on $r$).
+  `merton_char_func` NOT reused wholesale (its drift double-counts); only the
+  jump factor + explicit compensator
+- Notation clash settled: Heston mean-reversion $\kappa_v$ vs jump compensator
+  $\kappa_J$, kept distinct in code (`kappa_v`, `kappa_j`) to avoid a silent mixup
+
+#### Cumulants
+- Add (independence -> log char funcs add):
+  $c_1 = c_1^{\text{Heston}}(r-q) + \lambda\tau\mu_J - \lambda\kappa_J\tau$,
+  $c_2 = c_2^{\text{Heston}} + \lambda\tau(\mu_J^2 + \delta_J^2)$. The $\mu_J^2$
+  in $c_2$ is the compound-Poisson $E[Y^2]$; dropping it narrows the range.
+  Bates has BOTH fat-tail sources, so more truncation-hungry than either parent,
+  default wrapper $N=256, L=12$, to be validated
+
+#### Written today
+- `models/bates.py`: `bates_char_func`, `bates_cumulants`
+- `pricing/fourier.py`: `bates_cos_price` wrapper
+- Relocated `heston_cumulants` to `models/heston.py` so `bates.py` reuses it
+  without a circular import through `fourier.py`
+
+#### Notebook
+- Bates theory notebook written learning-style `14_bates_model.ipynb` (composition, compensator
+  placement, cumulants-add, why Bates should beat both halves). Code cells
+  stubbed for tomorrow
+
+### Day 39 - Wed Sep 2
+
+Bates validated end to end and demoed. All gates green, model certified.
+
+#### Import fix
+- `models/bates.py` still imported `heston_cumulants` from `pricing.fourier`
+  (its old home), creating a circular import once `fourier` imports `bates`.
+  Fixed: import from `models.heston` (relocated yesterday). Graph now acyclic,
+  `fourier` depends on models, models don't depend on `fourier`
+
+#### Validation (test_fourier.py::TestBates, 7 tests, all green)
+- Martingale $\phi(-i) = S_0 e^{(r-q)\tau}$: exact, certifies compensator placement
+- $\phi(0) = 1$
+- Heston limit ($\lambda \to 0$): exact to machine precision ($1.3\times10^{-14}$)
+  AT $q=0$. Key debugging finding: the first comparison was off by
+  $3\times10^{-2}$, immovable under both $N$ and $L$ sweeps (so not truncation).
+  Isolated it by checking cumulants (matched), then char funcs (matched
+  bit-for-bit), which localized it to discounting. Cause: `cos_call_price` has a
+  single $r$ argument used for BOTH drift and discount, so feeding it $r-q$
+  discounted at $r-q$ (wrong). Bates correctly separates drift ($r-q$) from
+  discount ($r$). Not a Bates bug, a flawed test, you cannot validate a
+  dividend-aware model against a pricer that conflates drift and discount. $q=0$
+  is the fair comparison
+- Merton limit ($\xi \to 0$, $v_0 = \theta$): matches Merton at $\sigma=\sqrt\theta$
+  to $2\times10^{-5}$. The second parent-reduction, a composition bug would break
+  one of the two collapses, so testing both is strong certification
+- Cumulant reduction to Heston at $\lambda=0$, put-call parity, and COS-vs-MC
+  (Heston QE variance + compound-Poisson jumps, $z < 3$) all pass
+- `bates_simulate_terminal`: reuses `simulate_heston_paths` with adjusted drift
+  $r \to r - q - \lambda\kappa_J$ (legal, its drift is a lone $r\,dt$ term), plus
+  Merton jumps added terminally. Same $\kappa_J$ as the char func, so MC and COS
+  describe the identical process
+
+#### Demos
+- Sample paths: continuous stochastic-vol wiggle (amplitude breathing with $v_t$)
+  punctuated by discrete downward-leaning jumps. The two mechanisms visible in
+  one picture
+- Bates vs Heston smiles at 29d and 182d: jumps steepen the short-dated smile
+  dramatically (change its shape, not just level, gap largest in the wings),
+  and the two converge at longer tenor as diffusion variance dominates. The term
+  structure of skew steepness (violent short, gentle long) that neither parent
+  produces alone. Closes the W7 puzzle visually
+
+#### Truncation sweep (the validation gap we'd planned and skipped)
+- Confirmed defaults and found a real trade-off. $N$: converged by 128, plateaus
+  after (error then set by range, not resolution); default 256 fine. $L$:
+  improves $8\to16$ then WORSENS at 20, the range-resolution trade-off (wider
+  captures more tail but coarsens resolution at fixed $N$). Optimum $\approx 16$;
+  default $L=12$ gives $2.4\times10^{-9}$ parity, more than adequate
+- Lesson: Kou taught too-narrow clips the tail; Bates shows too-wide starves
+  resolution. Fix for a slightly-off wing is more $N$, not reflexively more $L$
+
+### Day 40 - Mon Sep 7
+
+Back from a short break. W8 continues: Variance Gamma theory and notebook.
+Implementation tomorrow. (Bates was finished Wed: certified, demoed,
+truncation-swept.)
+
+#### VG concept
+- Pure-jump, no diffusion at all, unlike everything prior (BSM/Heston diffusion,
+  Merton/Kou/Bates diffusion+jumps). Infinite-activity: infinitely many jumps per
+  interval, almost all infinitesimal, a few large. Paths look near-continuous but
+  are pure jumps. Skew/kurtosis come from the jump-size distribution, not a
+  diffusion+jump split
+
+#### Subordination (the construction)
+- $X_t = \theta\Gamma_t + \sigma W_{\Gamma_t}$: Brownian motion run on a random
+  business-time clock $\Gamma_t$ (a Gamma process). Direction: calendar time $t$
+  is the DETERMINISTIC input; the clock outputs random business time
+  $\Gamma_t \sim$ Gamma(mean $t$, var $\nu t$); observe BM at that random time
+- "Subordination" names the hierarchy: the clock $\Gamma$ (subordinator) governs
+  the time at which $W$ is observed, so $W$ is subordinate to it. Clock must be
+  non-decreasing (time moves forward). Bochner's term
+- Economic story: markets don't experience time uniformly; busy periods = clock
+  races (big moves), quiet = clock crawls. Random clock turns uniform-variance BM
+  increments into fat-tailed variable-magnitude returns
+
+#### Three params
+- $\sigma$ scale, $\nu$ kurtosis (Gamma clock variance rate; $\nu\to0$ = pure BM),
+  $\theta$ skew (BM drift in business time; $\theta<0$ = equity left-skew)
+
+#### Distribution + char func
+- Conditional on clock $\Gamma_t=g$: return is $\mathcal{N}(\theta g, \sigma^2 g)$.
+  Actual distribution is a continuous MIXTURE of Gaussians, one per clock value,
+  weighted by the Gamma density. Variance-mixing (wide-clock draws overpopulate
+  tails) is where excess kurtosis comes from; $\theta$ making wide draws also more
+  negative is the skew
+- Char func via conditioning then averaging: $E_g[e^{gs}]$ with
+  $s = iu\theta - \frac12\sigma^2 u^2$ is the Gamma MGF, a POWER LAW, giving
+  $\phi_{VG}(u) = (1 - iu\theta\nu + \frac12\sigma^2\nu u^2)^{-t/\nu}$. Deep tidy
+  fact: the char func inherits the functional form of the driving randomness's MGF
+  (Poisson -> exp-of-exp for jump-diffusions; Gamma -> power law for VG). Simplest
+  char func of all the models
+- Martingale correction $\omega = \frac1\nu\log(1 - \theta\nu - \frac12\sigma^2\nu)$,
+  analogue of the jump compensator. Hides a constraint:
+  $1 - \theta\nu - \frac12\sigma^2\nu > 0$ (VG analogue of Kou's $\eta_1>1$)
+
+#### Benchmark framing
+- VG = 3 params, no diffusion, vs Bates's 8. Known to fit a single slice well but
+  struggle with term structure (skew/kurtosis decay with $t$ in a fixed way, no
+  stochastic vol to control it). Mirror image of Heston (term structure but too
+  little short-dated skew). Bates should get both. That contrast is why VG is in
+  the benchmark
+
+#### Notebook
+- VG theory notebook written inline (concept, subordination, mixture-of-Gaussians,
+  power-law char func, martingale/constraint, benchmark framing). Demos stubbed:
+  (1) mixture-of-Gaussians showing kurtosis from variance-mixing [centerpiece],
+  (2) nu/theta parameter sweeps, (3) VG smile term-structure weakness
+
+### Day 41 - Tue Sep 8
+
+VG implemented, certified, and demoed. Last new model of Phase 1. Theory and
+figures in the VG notebook.
+
+#### models/vg.py
+- vg_char_func: power-law form $\phi(u) = e^{iu(\ln S_0 + (r-q+\omega)T)}
+  (1 - iu\theta\nu + \frac12\sigma^2\nu u^2)^{-T/\nu}$, with martingale correction
+  $\omega = \frac1\nu\log(1 - \theta\nu - \frac12\sigma^2\nu)$. Constraint
+  $1 - \theta\nu - \frac12\sigma^2\nu > 0$ (omega finite), the VG analogue of
+  Kou's $\eta_1>1$; raises ValueError with the offending values
+- vg_cumulants: $c_1 = \ln S_0 + (r-q+\omega)T + \theta T$,
+  $c_2 = (\sigma^2 + \nu\theta^2)T$. Caught a dropped $\ln S_0$ in $c_1$ during
+  review (would mis-center the COS grid and price garbage, silent bug). omega
+  identical to the char func
+- vg_simulate_terminal: subordination sampling, draw Gamma clock
+  $g \sim \Gamma(\text{shape}=T/\nu, \text{scale}=\nu)$ (mean $T$, var $\nu T$),
+  then conditional return $\mathcal{N}(\theta g, \sigma^2 g)$. Exact (one clock
+  draw + one Gaussian), no path discretization, so no MC bias
+- vg_cos_price wrapper in fourier.py, default $N=256, L=12$
+
+#### Validation (test_fourier.py::TestVG, 7 tests, all green)
+- BSM limit ($\nu\to0$, deterministic clock -> pure BM), martingale $\phi(-i)$,
+  $\phi(0)=1$, constraint raise (confirmed it fires), $\theta=0$ gives
+  $c_2=\sigma^2 T$, put-call parity, COS-vs-MC ($z<3$) against the subordination
+  sampler. Parity held at default $L=12$, VG's power-law tails less
+  truncation-hungry than feared. Fifth model through the same certification
+  gauntlet, dropped into the model-agnostic COS core with no pricer changes
+
+#### Concept recap (the hard part of VG)
+- Subordination: calendar time $t$ is deterministic input; the Gamma clock
+  outputs random business time $\Gamma_t$; observe BM at that random time. "$W$
+  subordinate to the clock." Char func inherits the driving randomness's MGF
+  shape, Gamma MGF is a power law, hence VG's power-law char func (vs
+  jump-diffusions' exp-of-exp from Poisson)
+
+#### Demos
+- Mixture-of-Gaussians: return distribution is a probability-weighted blend of
+  conditional Gaussians $\mathcal{N}(\theta g, \sigma^2 g)$, one per clock value.
+  Peakier + fatter-tailed than a matched-variance Gaussian; variance-mixing IS
+  the excess kurtosis, $\theta$ tilting the wide draws IS the skew
+- Paths vs GBM: VG is near-deterministic drift over quiet-clock stretches
+  punctuated by lurches. $\nu$ dials VG from Brownian-like (small $\nu$, the
+  $\nu\to0$ limit the test confirmed) to jump-like (large $\nu$). Infinite
+  activity: diffuse when under-resolved, no clean isolated gaps unlike
+  finite-activity Merton/Bates
+- Density sweeps (Demo 2): clean isolation, $\nu$ with $\theta=0$ is pure
+  kurtosis (peak + tails grow), $\theta$ at fixed $\nu$ is pure skew (tilt only)
+- Smile across maturities (Demo 3, the benchmark thesis): short-dated smile a
+  deep sharply-curved V (steep skew + wing curvature a diffusion can't make),
+  flattening dramatically to nearly flat by $T=2$. Crucially the flattening rate
+  is NOT free, it is locked by the same $(\sigma,\nu,\theta)$ that set the
+  short-dated shape (skew ~ $\theta$, kurtosis ~ $\nu/T$). So VG cannot
+  independently control term structure. Mirror image of Heston: Heston has term
+  structure but flattens too fast at the SHORT end; VG has short-dated
+  skew/curvature but flattens too fast into the LONG end. Bates (both mechanisms)
+  should fit both ends
+
+### Day 42 - Wed Sep 9
+
+W8 final day: cross-model benchmark (the capstone), then close the branch.
+
+#### Calibrators written (calibration/jumps.py, kept there for now, tidy next week)
+- calibrate_vg, calibrate_heston, calibrate_bates, each a clone of the
+  calibrate_merton pattern over the shared _model_ivs / _calibrate_jump helpers
+- Forward convention: VG/Bates take q, so use (F, r, r) + rate-r inversion,
+  matching Merton/Kou. Heston has NO q and cos_call_price conflates drift and
+  discount into one rate, so it prices AND inverts at rate 0 (forward-measure,
+  undiscounted); IV is invariant to the discount convention as long as pricing
+  and inversion use the same rate. This is the drift-vs-discount subtlety that
+  produced the phantom gap in the Bates Heston-limit test on Day 39
+- Heston calibrator certified by synthetic recovery: generated a smile from known
+  Heston params, recovered all five EXACTLY (curve diff 0.0), so the rate
+  convention is right
+
+#### Data: thin feed today (Monday-ish staleness on a Wed pull)
+- Liquidity scan at max_staleness_days=7: only the 82d expiry (2026-11-30) was
+  healthy, 49 OTM strikes (12 common for the forward). Short liquid slices too
+  thin (30d had 10 common, 45/60d had 2). So the benchmark is a SINGLE 82d slice,
+  not multi-maturity. This matters: 82d is the gentle-smile regime, so it does
+  NOT stress the short-dated jump-vs-diffusion distinction that motivated the arc
+
+#### Benchmark result (five models, 82d slice, RMSE vol pts)
+- VG 1.76 (3p), Merton 1.31 (4p), Heston 0.91 (5p), Kou 0.73 (5p), Bates 0.34 (8p)
+- RMSE falls almost monotonically with parameter count, so the ranking is mostly
+  the "more params fit better" law, not truth
+- The fits coincide from the money out to k~-0.15, then fan apart in the deep-left
+  wing. The ENTIRE ranking lives in that wing, which is also the noisiest data
+  (widest-spread deep puts). So the contest is partly over who best fits noise
+
+#### The real finding: both low-RMSE winners degenerated
+- Bates params: xi=2.000 and lam=3.000 BOTH pinned at ceilings (max vol-of-vol AND
+  max jump intensity). 0.34 achieved by throwing every mechanism at the wing, not
+  a clean optimum
+- Kou params: p=0.0000 and eta1=49.998 BOTH pinned (up-jump prob at floor, up-rate
+  at ceiling) -> collapsed to a purely one-sided down-jump model. SAME degeneracy
+  as Kou's first real-data fit in W7 (p->0 there too). Repeatable, so it is a real
+  signal: the SPX smile wants crash-only (one-sided) jumps
+- So the two BEST-RMSE models both won via boundary-pinned degeneracy. The only
+  fits with fully interior, interpretable params were the SIMPLER models. Heston
+  (0.91, all interior, sensible) is the most TRUSTWORTHY fit despite sitting
+  mid-table. RMSE ranking and trustworthiness ranking are nearly inverted
+- Cleanest same-param signal: Kou (0.73) vs Heston (0.91), both 5p, so not a
+  flexibility artifact, BUT Kou's edge comes with two pinned params, so even that
+  is qualified
+
+#### Capstone lesson
+- Lower RMSE is not better if bought with pinned parameters. The pinned-parameter
+  red flag has now fired three times (pinned rho W6, p->0 W7, xi/lam + p/eta1 here).
+  "Check whether params sit at their bounds" is a first-class validation step
+- The regime set the scope: a gentle 82d slice can't test short-dated model
+  divergence; a proper benchmark needs multi-maturity + a short slice + a richer
+  feed (to constrain Bates's 8 params and expose VG's term-structure rigidity).
+  Today's result is real but narrow, and honest about being so
+
+#### Notebook
+- 16_cross_model_benchmark.ipynb: slice pull, five-model fit, RMSE table, params
+  printout, overlay plot, and markdown lessons (parameter-count caveat, the
+  boundary-pinning finding on both winners, the regime caveat, Kou's repeated
+  one-sided degeneracy). Capstone of the Bates/VG arc
+
+#### W8 closed
+- Full test suite green, merge feature/week-08-bates --no-ff, tag v0.8-week8
+
+#### Deferred (carried forward)
+- Move VG/Heston/Bates calibrators out of jumps.py into a properly-named module
+  (jumps.py now holds non-jump models too); tidy next week
+- Heston-Kou model: swap Kou's f_hat into the Bates composition, ~15 min, worth it
+  if Bates's Merton jumps underfit the downside
+- Proper multi-maturity benchmark on a richer feed (short + long slices), to
+  constrain Bates and expose VG term-structure rigidity
+- Staleness filter 2-day default wipes Monday/off-hours pulls (business-day aware
+  or more forgiving); use max_staleness_days=7 meanwhile
+- r hardcoded 0.045 (FRED short-tenor rate, run locally)
+
+#### Milestone
+- W8 done. Phase 1 pricing-model toolkit COMPLETE and certified: BSM, binomial,
+  MC, Heston, Dupire local vol, Fourier pricers (COS + Carr-Madan), SVI, SABR,
+  Merton, Kou, Bates, VG. Next: W9 (rough vol / rBergomi + Phase 1 write-up)
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
@@ -1458,6 +1746,7 @@ real data. The beta sweep even caught a latent alpha-bounds bug. Clean close.
 - All Day 21–25 work pushed to `feature/week-05-fourier-pricing` branch on GitHub
 - All Day 26–32 work pushed to `feature/week-06-heston-calibration` branch on GitHub
 - All Day 33–37 work pushed to `feature/week-07-jumps` branch on GitHub
+- All Day 38–42 work pushed to `feature/week-08-bates` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - **Phase 3 note**: adopt QuantLib (conda-forge `quantlib`) as the production pricing
   reference - cross-validate own pricers against it, and lean on it for the pricing layer

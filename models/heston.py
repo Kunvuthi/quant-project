@@ -110,6 +110,26 @@ def simulate_heston_paths(
 
     return S, v
 
+def heston_cumulants(
+    S0: float, v0: float,
+    kappa: float, theta: float, xi: float, rho: float, r: float,
+    tau: float,
+) -> tuple[float, float]:
+    """First and second cumulants of ln(S_T) under Heston, closed form."""
+    ekt = np.exp(-kappa * tau)
+    ekt2 = ekt ** 2
+
+    c1 = np.log(S0) + (r - 0.5 * theta) * tau + (theta - v0) * (1 - ekt) / (2 * kappa)
+
+    term1 = xi * tau * kappa * ekt * (v0 - theta) * (8 * kappa * rho - 4 * xi)
+    term2 = kappa * rho * xi * (1 - ekt) * (16 * theta - 8 * v0)
+    term3 = 2 * theta * kappa * tau * (-4 * kappa * rho * xi + xi**2 + 4 * kappa**2)
+    term4 = xi**2 * ((theta - 2 * v0) * ekt2 + theta * (6 * ekt - 7) + 2 * v0)
+    term5 = 8 * kappa**2 * (v0 - theta) * (1 - ekt)
+
+    c2 = (term1 + term2 + term3 + term4 + term5) / (8 * kappa**3)
+    return c1, c2
+
 def heston_char_func(
     u: np.ndarray,
     S0: float, v0: float,
