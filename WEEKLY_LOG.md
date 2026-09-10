@@ -1716,24 +1716,68 @@ W8 final day: cross-model benchmark (the capstone), then close the branch.
   boundary-pinning finding on both winners, the regime caveat, Kou's repeated
   one-sided degeneracy). Capstone of the Bates/VG arc
 
-#### W8 closed
-- Full test suite green, merge feature/week-08-bates --no-ff, tag v0.8-week8
 
-#### Deferred (carried forward)
-- Move VG/Heston/Bates calibrators out of jumps.py into a properly-named module
-  (jumps.py now holds non-jump models too); tidy next week
-- Heston-Kou model: swap Kou's f_hat into the Bates composition, ~15 min, worth it
-  if Bates's Merton jumps underfit the downside
-- Proper multi-maturity benchmark on a richer feed (short + long slices), to
-  constrain Bates and expose VG term-structure rigidity
-- Staleness filter 2-day default wipes Monday/off-hours pulls (business-day aware
-  or more forgiving); use max_staleness_days=7 meanwhile
-- r hardcoded 0.045 (FRED short-tenor rate, run locally)
+## Week 9 (Sep 10 - Sep 17): Rough Volatility - rBergomi
+### Day 43 - Wed Sep 10
 
-#### Milestone
-- W8 done. Phase 1 pricing-model toolkit COMPLETE and certified: BSM, binomial,
-  MC, Heston, Dupire local vol, Fourier pricers (COS + Carr-Madan), SVI, SABR,
-  Merton, Kou, Bates, VG. Next: W9 (rough vol / rBergomi + Phase 1 write-up)
+W9 opens. Theory + planning only, no implementation; the conceptual break from the W5-W8
+Fourier world, so the day was spent getting the "why" airtight before building a
+non-Markovian simulator tomorrow. Full theory in `17_rBergomi_model.ipynb` (cells 1-6);
+this is the retrospective skeleton.
+
+- The break: variance driven by the Volterra process $\widetilde W_t=\sqrt{2H}\int_0^t(t-s)^{H-1/2}dW_s$,
+  singular kernel exponent $H-\tfrac12<0$. Load-bearing twice: sets path roughness (Hölder-$H$,
+  anti-persistent increments), and kills Markovianity because the power law does not factorise
+  the way $e^{-\kappa(t-s)}$ does, so the history cannot collapse to a carried state. No Markov
+  $\Rightarrow$ no char func $\Rightarrow$ COS dead $\Rightarrow$ back to MC. Derivation and the
+  OU pull-out contrast in notebook cell 4
+- Why worth it: $\psi(\tau)\sim\rho\,\eta\,\tau^{H-1/2}$ (power-counting, cell 5). $H<\tfrac12$
+  explodes short, decays polynomially (slow) long, one exponent fixes both ends; the 30-vs-75 DTE
+  flattening from W1. $H$/$\eta$ do not degenerate: $\eta$ = amplitude (vertical), $H$ = exponent
+  (slope), independent, so calibration well-posed and roughness is inherently multi-maturity
+  (why the single-slice W8 benchmark couldn't test it). Diagnostic: interior $H$ + pinned $\eta$
+  = data/$\xi_0$ problem, not roughness
+- Model $v_t=\xi_0(t)\exp(\eta\widetilde W_t-\tfrac12\eta^2 t^{2H})$; the correction is a forced
+  Doleans-Dade term pinning $\mathbb E[v_t]=\xi_0(t)$, $t^{2H}=\mathrm{Var}(\widetilde W_t)$ (cell 4)
+
+#### Planning
+- Notebook rule reaffirmed: 17 orchestrates and plots only, all definitions to modules. Layout:
+  `models/rbergomi.py` (RBergomiParams, volterra_cov, cross_cov, simulate_rbergomi; first
+  simulator-ONLY model, no char func/cumulants by construction); `pricing/monte_carlo.py` (NEW
+  agnostic core `european_price_from_samples`, mirrors the W7 COS-core refactor; move GBM over
+  from `models/montecarlo.py` to feed it, payoff-agnostic for Phase 3 deep hedging);
+  `calibration/implied_vol.py` reused; `calibration/rbergomi.py` for the later fit + deep-cal NN.
+  ML capstone stubbed plan-only in notebook cell 13
+- Volterra/cross covariance closed forms in notebook cell 7 (2F1 or quadrature)
+
+#### Tests (`tests/test_rbergomi.py`, written ahead of implementation, TDD)
+- TestVolterraCovariance (analytic): diagonal $=t^{2H}$; H=0.5 limit reduces auto- and cross-cov
+  to $\min(s,t)$ (BM), exercises the 2F1 boundary
+- TestRBergomiSimulator (z-score): variance scaling via log-log slope $\approx2H$ (slope not
+  pointwise, avoids multiple-comparisons flakiness); $\mathbb E[v_t]=\xi_0$ (martingale correction);
+  $\mathbb E[S_T]=1$ (forward-measure drift, analogue of $\phi(-i)$); positivity
+- TestRBergomiLeverage: log-$S_T$ skewness $<0$ at $\rho<0$, $\approx0$ at $\rho=0$. The ONLY guard
+  on the shared-$W$ wiring; every moment test above stays green under an independent-BM bug
+- API contract (volterra_cov/cross_cov elementwise over broadcast s,t) pinned at file top; fix the
+  signature before writing the module
+
+#### Tomorrow (build order, each certified before the next consumes it)
+1. `pricing/monte_carlo.py` core; move GBM; re-run W1 GBM tests against the relocated pricer, eyeball
+   that they assert on SE not just price (paths-vs-pairs antithetic, the W1 590k reshape ghost)
+2. `models/rbergomi.py`: covariances first, then simulator; green `test_rbergomi.py` before anything
+   touches $v$ or $S$ (variance-scaling gates all)
+3. Notebook demos (cells 8-12): rough paths across $H$, $\mathbb E[v_t]=\xi_0$ curve, MC smile via the
+   new core, skew-exponent log-log fit (capstone)
+
+#### Deferred
+- All W8 carries unchanged (split jumps.py, Heston-Kou, multi-maturity benchmark, business-day
+  staleness, FRED rate); none blocking
+- Open question for tomorrow: quantify the false-fail rate of an all-$N$-point $|z|<4$ variance gate
+  vs the single-slope fit
+
+Pace note: deliberate no-code theory day; the "why MC not COS" and "$H$/$\eta$ don't degenerate"
+chains had to be solid before building the first non-Markovian model. Slightly off a pure-build
+cadence, worth it.
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
