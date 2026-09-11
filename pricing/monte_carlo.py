@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Literal, Callable
+from models.montecarlo import simulate_gbm_terminal
 
 # ---- The estimator (valid only on iid units) ---- #
 
@@ -74,6 +75,17 @@ def european_price_from_samples(
     if antithetic:
         payoff = _resolve_antithetic(payoff)
     return mc_price(payoff, r, T)
+
+def bsm_price_mc(
+    S: float, K: float, T: float, r: float, sigma: float,
+    N: int = 10_000, option_type: Literal["call", "put"] = "call",
+    antithetic: bool = False, seed: int | None = None,
+) -> tuple[float, float]:
+    """European GBM price via MC. Simulate terminal, delegate to the agnostic
+    core. Signature preserved from the pre-refactor version so call sites are
+    unchanged; only the import path moves."""
+    S_T = simulate_gbm_terminal(S, T, r, sigma, N, antithetic, seed)
+    return european_price_from_samples(S_T, K, r, T, option_type, antithetic=antithetic)
 
 
 # ---- Optional: generic exotic entry point (Phase 3 hook, leave stubbed) ---- #
