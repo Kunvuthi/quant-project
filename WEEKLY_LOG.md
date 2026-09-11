@@ -1761,20 +1761,88 @@ this is the retrospective skeleton.
 - API contract (volterra_cov/cross_cov elementwise over broadcast s,t) pinned at file top; fix the
   signature before writing the module
 
-#### Tomorrow (build order, each certified before the next consumes it)
-1. `pricing/monte_carlo.py` core; move GBM; re-run W1 GBM tests against the relocated pricer, eyeball
-   that they assert on SE not just price (paths-vs-pairs antithetic, the W1 590k reshape ghost)
-2. `models/rbergomi.py`: covariances first, then simulator; green `test_rbergomi.py` before anything
-   touches $v$ or $S$ (variance-scaling gates all)
-3. Notebook demos (cells 8-12): rough paths across $H$, $\mathbb E[v_t]=\xi_0$ curve, MC smile via the
-   new core, skew-exponent log-log fit (capstone)
+### Day 44 - Fri Sep 11
+
+Refactor + rBergomi simulator, both certified. No demos yet (deliberate stop after
+the simulator went green). Build only, theory was Day 43.
+
+#### MC refactor (model-agnostic core, mirrors the W7 COS refactor)
+- New `pricing/monte_carlo.py`: `mc_price(payoffs, r, T)` estimator (1-D iid contract,
+  rejects 2-D so it cannot be handed correlated rows), `european_payoff`,
+  `_resolve_antithetic` (pairs `[:n]` with `[n:]` on the PAYOFF, nonlinear so cannot
+  average $S_T$ first; explicit slice not reshape, the W2 lesson),
+  `european_price_from_samples` wrapper, `price_from_samples` stubbed
+  NotImplementedError for Phase 3 exotics
+- Antithetic SE contract: pairing resolved in the wrapper into iid units BEFORE
+  `mc_price`, so `ddof=1` over the pair count is honest. Feeding the full $2n$ array in
+  as iid would report SE too BIG (ignores the negative pair correlation), and that
+  direction is the dangerous silent one: a too-big SE deflates the z-score so the
+  z-from-truth check passes quietly, unlike the W2 590k too-small SE which screamed
+- GBM relocated: `models/montecarlo.py` now simulator-only, kept `simulate_gbm_paths`,
+  extracted `simulate_gbm_terminal` (one draw per sample, no dt, `[S+ ; S-]` antithetic
+  layout). `bsm_price_mc` moved to `pricing/monte_carlo.py` as a thin wrapper, same
+  signature so notebook call sites unchanged. Dependency direction clean (pricing imports
+  models, never reverse)
+- Notebooks 01, 02: import line only, `from models.montecarlo` -> `from pricing.monte_carlo`.
+  9 call sites in 02 untouched
+
+#### Refactor gotcha caught (tests passed, notebook crashed)
+- First extraction mispasted the `simulate_gbm_paths` body into `simulate_gbm_terminal`
+  (wrong signature, `n_steps`/`n_paths`, drew a 2-D grid). Test suite stayed GREEN because
+  it exercised `mc_price`/`european_price_from_samples` directly and never called the
+  wrapper. Notebook 01 caught it. Lesson: the relocation's entry point had zero coverage.
+  Added `test_bsm_price_mc_matches_analytic` (wrapper end-to-end vs `bsm_price`, z<3) to
+  close the gap
+- Decision noted: `simulate_gbm_terminal` is NOT just `simulate_gbm_paths(n_steps=1)[:,-1]`.
+  Kept separate on contract grounds (1-D vs 2-D return, and antithetic pairing differs for
+  path-dependent payoffs), not line count. Unify the common estimator, keep the simulators
+  per-purpose
+
+#### rBergomi simulator (`models/rbergomi.py`, first simulator-ONLY model)
+- Header flags the structural fingerprint: no char func, no cumulants, by construction
+- `volterra_cov(s,t,H)`: closed form $2H\,a^{2H}/(H+\tfrac12)\,x^{H-1/2}\,{}_2F_1(\tfrac12-H,1,H+\tfrac32,1/x)$,
+  $a=\min$, $b=\max$, $x=b/a$, symmetrised so $1/x\in[0,1]$. `scipy.special.hyp2f1`
+- `cross_cov(t_vol,s_bm,H)` $=\sqrt{2H}/(H+\tfrac12)\,(t_{vol}^{H+1/2}-(t_{vol}-\min)^{H+1/2})$,
+  NOT symmetric
+- `build_joint_covariance`: 2N x 2N blocks [vv | vw ; vw.T | ww], ww $=\min(t_i,t_j)$.
+  Factored out so `TestVolterraCovariance` hits it directly
+- `simulate_rbergomi`: Cholesky of Sigma, map iid N(0,I) to (W_tilde, W); v from the
+  martingale-corrected lognormal; price via log-Euler with the shared-W leverage channel
+- Four bugs fixed during review (3 crash, 1 silent): trailing comma making dt a tuple; `^`
+  (XOR) for `**`; `dW_perp` drawn at width 2N not N; and the silent one, `v_left` must
+  PREPEND $v_0=\xi_0(0)$ (left-endpoint variance for the Euler step), not slice `v[:,:-1]`.
+  The `v_left` right-vs-left slip is the bug the suite guards LEAST: it keeps $E[S_T]=1$
+  (drift and diffusion share v) and the bias vanishes as N grows, so only the smile shape
+  at coarse N shows it. Keep demo grids fine
+- `xi0` contract: must accept t=0 and return initial forward variance (flat curves do for
+  free). A broken `xi0(0)` fails LOUD on the prepend line, not a subtle `v_left`. Market
+  curves later must be defined/clamped down to 0
+
+#### Tests (all green)
+- `TestVolterraCovariance`: diagonal $=t^{2H}$, H=0.5 -> min(s,t) for both auto and cross,
+  closed-form vs `quad` ground truth. Fast (analytic)
+- `TestRBergomiSimulator`: variance scaling log-log slope $\approx 2H$, $E[v_t]=\xi_0$
+  (martingale correction), $E[S_T]=1$ (drift), positivity. ~5s full class
+- `TestRBergomiLeverage`: log-$S_T$ skewness $<0$ at rho<0, $\approx0$ at rho=0. Only guard
+  on the shared-W wiring
+- `TestMonteCarlo`: antithetic SE reduction, 2-D rejection, wrapper-vs-analytic
+
+#### State
+- pricing/monte_carlo.py, models/montecarlo.py (simulator-only), models/rbergomi.py all
+  done and certified. Notebook 17 still theory + empty demo scaffolds
+- W8 deferrals unchanged, none blocking
+
+#### Next session: notebook 17 demos (cells 8-12)
+1. Rough paths across H in {0.1,0.3,0.5}, visual roughness + Var(W_tilde)=t^{2H} check
+2. E[v_t]=xi0 martingale curve
+3. MC smile via the new core, sweep rho (skew) and eta (smile size)
+4. Capstone: skew term structure psi(T) across maturities, log-log fit recovers slope ~ H-0.5.
+   The demo that ties roughness back to the 30-vs-75 DTE flattening. Keep the grid fine (v_left)
 
 #### Deferred
 - All W8 carries unchanged (split jumps.py, Heston-Kou, multi-maturity benchmark, business-day
   staleness, FRED rate); none blocking
-- Open question for tomorrow: quantify the false-fail rate of an all-$N$-point $|z|<4$ variance gate
-  vs the single-slope fit
-
+  
 Pace note: deliberate no-code theory day; the "why MC not COS" and "$H$/$\eta$ don't degenerate"
 chains had to be solid before building the first non-Markovian model. Slightly off a pure-build
 cadence, worth it.
