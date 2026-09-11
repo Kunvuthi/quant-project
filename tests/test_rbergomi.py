@@ -50,6 +50,17 @@ class TestVolterraCovariance:
         s_bm = np.array([0.5, 0.5, 0.4, 1.5])
         cross = cross_cov(t_vol, s_bm, 0.5)
         assert np.allclose(cross, np.minimum(t_vol, s_bm), atol=1e-6), (cross, np.minimum(t_vol, s_bm))
+        
+    def test_closed_form_matches_quadrature(self):
+        """hyp2f1 closed form vs direct numerical integration of the defining
+        integral, the ground truth. Guards a wrong 2F1 argument or prefactor that
+        the diagonal and H=0.5 limits might not catch (both are special points)."""
+        from scipy.integrate import quad
+        for s, t in [(0.3, 0.7), (0.5, 0.5), (0.9, 0.2)]:
+            a, b = min(s, t), max(s, t)
+            integrand = lambda u: (a - u) ** (self.H - 0.5) * (b - u) ** (self.H - 0.5)
+            quad_val = 2 * self.H * quad(integrand, 0.0, a, points=[a])[0]
+            assert np.isclose(volterra_cov(s, t, self.H), quad_val, atol=1e-6), (s, t)
 
 
 # ---- Simulator moment checks (z-score, SE-derived tolerances) ---- #
