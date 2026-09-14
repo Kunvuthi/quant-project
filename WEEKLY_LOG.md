@@ -1827,25 +1827,98 @@ the simulator went green). Build only, theory was Day 43.
   on the shared-W wiring
 - `TestMonteCarlo`: antithetic SE reduction, 2-D rejection, wrapper-vs-analytic
 
+### Day 45 - Mon Sep 14
+
+Notebook 17 demos finished (Phase 1 classical arc complete), a round of cleanup, and
+the deep-calibration foundation laid. Stopped before dataset generation.
+
+#### Notebook 17 demos (cells 8-12, all producing plots)
+- Demo 1 rough paths across H {0.1, 0.3, 0.49}: H=0.1 visibly jagged/anti-persistent,
+  H=0.49 ordinary-Brownian. H=0.5 exactly is SINGULAR (Cholesky fails): at H=0.5 all four
+  Sigma blocks collapse to min(t_i,t_j), so $x=[u,-u]$ gives $x^\top\Sigma x=0$. The
+  singularity needs the CROSS block to reach full correlation with the diagonals, not just
+  the diagonals matching. Use H=0.49 for the demo, do NOT jitter-regularise (the raise is a
+  real rank-deficiency signal). Caveat noted: same seed across panels does NOT give
+  pathwise-comparable paths, `Z @ L.T` maps the same iid Z through a different L per H
+- Demo 2 $\mathbb E[v_t]=\xi_0$: empirical mean hugs 0.04, band widens with t (v disperses
+  as $t^{2H}$), max |z|=2.51 over 200 pts (expected extreme). A broken correction would lift
+  the curve ~3x by t=1, so the plot has real diagnostic teeth
+- Demo 3 smile, rho + eta sweeps: rho rotates the smile about a near-fixed point just left of
+  ATM (skew), eta scales convexity+skew together (amplitude). Confirms the Day 43
+  rotation-vs-amplitude identifiability picture visually. Note: at eta=2.5 the smile trough
+  shifts right of ATM (~k=0.1), a real aggressive-param rBergomi feature, not a bug
+- Demo 4 capstone: recovered H=0.109 (slope -0.391) vs true H=0.1 (theory -0.400), 8
+  maturities on a clean log-log line across ~2 decades. Slope slightly shallow because the
+  short point sits above / long points below the line (finite-maturity bend, xi0/eta
+  corrections on a short-time asymptotic). This is the 30-vs-75 DTE flattening reproduced
+  from first principles, and the plot a Markovian model structurally cannot make. Wrote a
+  clueless-reader markdown writeup for this cell
+
+#### Cleanup
+- jumps.py split (was deferred since W8): calibration/jumps.py keeps Merton+Kou,
+  calibration/fourier_models.py now holds VG+Heston+Bates, shared machinery
+  (`_model_ivs`, `_calibrate_jump`) in calibration/_common.py. Names unchanged so imports
+  are pure path edits. Only notebook 16 needed editing (two-line import split); notebook 13
+  imports only Merton/Kou, untouched. `.ipynb_checkpoints` grep hits are autosave copies,
+  ignored. TODO minor: drop unused `NamedTuple` import from _common.py; `_calibrate_jump`
+  is now a misnomer (generic LS runner) but not worth renaming 5 call sites
+- PyTorch installed (CPU-only, `conda install pytorch cpuonly -c pytorch`) and added to
+  environment.yml. pyproject.toml NOT touched (keep heavy sci deps in the conda env, not
+  package metadata). No reinstall needed, editable install picks up new modules
+- artifacts/ resolved: back in .gitignore (outputs, not source, regenerable), folder kept
+  locally, code will `Path("artifacts").mkdir(exist_ok=True)` at runtime. No .gitkeep
+
+#### Deep-calibration setup (Horvath-Muguruza-Tomas 2019, "Deep learning volatility")
+- Framing: learn the FORWARD map $(H,\eta,\rho,\xi_0)\to$ IV surface offline, then calibrate
+  by optimising network inputs against a target surface (ms, differentiable) instead of
+  slow-MC-per-eval. NN imitates the certified pricer, NOT the market. Validate against the
+  pricer, never market fit (that is a separate question). Fits the project principle: fast
+  approximator on a certified baseline
+- xi0 decision: build FLAT (H, eta, rho, v0) today as the certification vehicle (4 scalars,
+  clean synthetic recovery), extend to term-structure pillars TOMORROW before real SPX. Flat
+  xi0 cannot fit a real surface (forces the pinned-param degeneracy), so term-structure is
+  required for market data. Structure code so xi0 is one swappable block, not a threaded scalar
+- Layout (industry practice, separation by change-rate): calibration/deep_cal/ with
+  surface.py (params->surface, SHARED by dataset + tomorrow's real path), dataset.py
+  (generator -> artifacts/), network.py (nn.Module only), train.py (loop+checkpoint),
+  calibrate.py (frozen-net input optimisation). deep_cal sits atop the dependency stack,
+  consumes models/pricing/calibration, nothing imports it back
+
+#### surface.py written (the shared foundation)
+- Canonical grid defined ONCE at module top: MATURITIES (8, short-weighted 0.05..2.0),
+  LOG_MONEYNESS (11, linspace -0.30..0.30), 88 nodes = NN output dim. Everything in deep_cal
+  imports these arrays
+- `rbergomi_iv_surface(H, eta, rho, v0, ...)`: normalised world (S0=1, r=0, K=exp(k)) so
+  it is spot-invariant and forward-relative, tomorrow's SPX quotes convert to k against the
+  parity forward and drop onto the same grid. Per-maturity simulation with T-scaled n_steps
+  (v_left bias ~1/N, uniform bias across maturities, avoids over-resolving long end since
+  Cholesky is cubic). OTM pricing per node (tighter IV). NaN contract: failed inversions
+  returned, `surface_is_complete` lets dataset.py filter; more paths reduces wing NaNs.
+  xi0 is one lambda line = the term-structure extension point
+- Learned/confirmed: within ONE simulation, readouts at different maturities are POSITIVELY
+  correlated (shared paths), not independent. That correlation cancels in cross-maturity
+  differences (slope), so a direct skew-slope diagnostic should use a SHARED simulation, not
+  sliced independent rows of surface.py. Harmless for the NN (learns nodewise forward map,
+  slope is emergent, per-node noise averages out over many training surfaces). Banked for
+  tomorrow if I compute a slope diagnostic on a calibrated fit
+
 #### State
-- pricing/monte_carlo.py, models/montecarlo.py (simulator-only), models/rbergomi.py all
-  done and certified. Notebook 17 still theory + empty demo scaffolds
-- W8 deferrals unchanged, none blocking
+- Phase 1 classical arc COMPLETE (local vol -> Heston -> jumps -> Bates -> rough vol, with
+  the capstone showing why rough vol exists). Notebook 17 done. calibration split done.
+  surface.py done. Nothing generated yet
+- W8 deferrals: jumps split now DONE. Remaining unchanged (Heston-Kou, multi-maturity
+  benchmark, business-day staleness, FRED rate), none blocking
 
-#### Next session: notebook 17 demos (cells 8-12)
-1. Rough paths across H in {0.1,0.3,0.5}, visual roughness + Var(W_tilde)=t^{2H} check
-2. E[v_t]=xi0 martingale curve
-3. MC smile via the new core, sweep rho (skew) and eta (smile size)
-4. Capstone: skew term structure psi(T) across maturities, log-log fit recovers slope ~ H-0.5.
-   The demo that ties roughness back to the 30-vs-75 DTE flattening. Keep the grid fine (v_left)
-
-#### Deferred
-- All W8 carries unchanged (split jumps.py, Heston-Kou, multi-maturity benchmark, business-day
-  staleness, FRED rate); none blocking
-  
-Pace note: deliberate no-code theory day; the "why MC not COS" and "$H$/$\eta$ don't degenerate"
-chains had to be solid before building the first non-Markovian model. Slightly off a pure-build
-cadence, worth it.
+#### Next session (tomorrow): real SPX calibration
+1. Decide (H, eta, rho, v0) sampling ranges (sized to typical SPX calibration landings)
+2. dataset.py: sample params, call rbergomi_iv_surface, filter incompletes, write to
+   artifacts/. Time 1 then 100 surfaces before committing to full size. Save scalers WITH
+   weights (input/output normalisation must match at calibration time)
+3. network.py MLP (88 outputs), train.py, validate surface RMSE vs pricer on held-out params
+4. Synthetic recovery test (feed a known-param surface, recover the params) BEFORE any real data
+5. THEN widen xi0 to term-structure pillars, re-validate synthetic recovery
+6. Only then load SPX: parity forward per maturity, quotes -> k, 2-D interp onto canonical
+   grid, watch edge extrapolation (short mat / far wings)
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
@@ -1859,6 +1932,7 @@ cadence, worth it.
 - All Day 26–32 work pushed to `feature/week-06-heston-calibration` branch on GitHub
 - All Day 33–37 work pushed to `feature/week-07-jumps` branch on GitHub
 - All Day 38–42 work pushed to `feature/week-08-bates` branch on GitHub
+- All Day 43–47 work pushed to `feature/week-09-rough-volatility` branch on GitHub
 - Risk-free rate hardcoded at 4.5% - should pull FRED 1M T-bill rate per maturity
 - **Phase 3 note**: adopt QuantLib (conda-forge `quantlib`) as the production pricing
   reference - cross-validate own pricers against it, and lean on it for the pricing layer
