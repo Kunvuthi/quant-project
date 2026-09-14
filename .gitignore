@@ -20,6 +20,9 @@ venv/
 .vscode/
 .idea/
 
+# Artifacts
+artifacts/
+
 # OS
 Thumbs.db
 .DS_Store

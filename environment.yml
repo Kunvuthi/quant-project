@@ -11,3 +11,6 @@ dependencies:
   - ipykernel
   - yfinance
   - arch-py
+  - pytorch
+  - cpuonly
+  - -c pytorch
