@@ -1,0 +1,1 @@
+# synthetic surface generator: params -> IV surface, saved to disk
