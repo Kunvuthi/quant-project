@@ -40,8 +40,10 @@ class TestRecovery:
         # tiny self-contained pipeline (loose, just certifies the logic)
         data = generate(n_surfaces=300, seed=2, n_paths=20_000)
         save(data, name="recovery_test.npz")
+        noise = np.std([rbergomi_iv_surface(0.11, 1.8, -0.7, 0.04, n_paths=20_000,
+                        rng=np.random.default_rng(s)) for s in range(8)], axis=0)
         train(dataset_name="recovery_test.npz", checkpoint_name="recovery_test.pt",
-              epochs=200, seed=2)
+              noise=noise, epochs=300, seed=2)
 
         true = np.array([0.11, 1.8, -0.7, 0.04])          # interior of the box
         surf = rbergomi_iv_surface(*true, n_paths=80_000,  # more paths: clean target
