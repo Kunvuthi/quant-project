@@ -1902,23 +1902,73 @@ the deep-calibration foundation laid. Stopped before dataset generation.
   slope is emergent, per-node noise averages out over many training surfaces). Banked for
   tomorrow if I compute a slope diagnostic on a calibrated fit
 
-#### State
-- Phase 1 classical arc COMPLETE (local vol -> Heston -> jumps -> Bates -> rough vol, with
-  the capstone showing why rough vol exists). Notebook 17 done. calibration split done.
-  surface.py done. Nothing generated yet
-- W8 deferrals: jumps split now DONE. Remaining unchanged (Heston-Kou, multi-maturity
-  benchmark, business-day staleness, FRED rate), none blocking
+### Day 46 - Tue Sep 16
 
-#### Next session (tomorrow): real SPX calibration
-1. Decide (H, eta, rho, v0) sampling ranges (sized to typical SPX calibration landings)
-2. dataset.py: sample params, call rbergomi_iv_surface, filter incompletes, write to
-   artifacts/. Time 1 then 100 surfaces before committing to full size. Save scalers WITH
-   weights (input/output normalisation must match at calibration time)
-3. network.py MLP (88 outputs), train.py, validate surface RMSE vs pricer on held-out params
-4. Synthetic recovery test (feed a known-param surface, recover the params) BEFORE any real data
-5. THEN widen xi0 to term-structure pillars, re-validate synthetic recovery
-6. Only then load SPX: parity forward per maturity, quotes -> k, 2-D interp onto canonical
-   grid, watch edge extrapolation (short mat / far wings)
+Deep calibration pipeline built and certified end to end on synthetic recovery. Long
+debugging day, most of it isolating why the network would not fit and why recovery drifted.
+The pipeline logic was mostly right early; the faults were in weighting scale/range, a
+degenerate node, and a calibration/training node-set mismatch.
+
+#### Pipeline (calibration/deep_cal/, all done)
+- surface.py: params -> IV surface on the canonical grid (from Day 45)
+- dataset.py: 3000 flat surfaces (H, eta, rho, v0), n_paths=30k, n_steps/yr=100, 0% reject,
+  ~1.8s/surface. Sampling box H[0.05,0.25], eta[0.5,4.0], rho[-0.95,-0.1], v0[0.01,0.16]
+- network.py: SurfaceNet, MLP width 64 depth 3, ELU, linear head, 4 in -> 88 out
+- train.py: split-before-scaler (no leak), standardise in+out, node mask + weights, early
+  stopping, checkpoint carries scalers + valid_nodes + node_weights
+- calibrate.py: frozen-net input optimisation, applies saved scalers, masks/weights by the
+  checkpoint's node weights, multi-start (box centre + 4 random) keeping best valid-node RMSE
+
+#### The debugging chain (the real work today)
+- Undertraining first suspect (loss still falling at epoch 400): added early stopping,
+  epochs 2000. Barely moved RMSE (0.0157->0.0157) and max node err stuck at 0.38. Ruled out
+  undertraining, pointed at the targets
+- Per-node MC noise measured properly (30 seeds, params FIXED, std across seeds isolates noise
+  from signal). Noise concentrated in short-maturity wings; node (0,10) noise exactly 0 = dead
+  (inversion returns a constant). NOTE the two corners differ: noisy corner is the short-dated
+  CALL wing (top-right, OTM calls have tiny vega -> unstable inversion); hardest-to-FIT corner
+  is the short-dated PUT wing (top-left, steepest skew -> sharpest curvature). Noise and
+  approximability are separate axes
+- Weighting saga (3 distinct bugs): (1) inverse-variance 1/noise^2 gave 500x weight spread,
+  a few clean nodes dominated -> softened to inverse-std 1/noise. (2) weights computed in
+  raw-IV units but applied to standardised residuals -> divide noise by ys.std to put weights
+  in standardised space. (3) mean-normalisation sets avg weight to 1 but not the RANGE; one
+  node still 84x -> clip at 10x median (range now 1.77x). Epoch-0 loss ~1300 was a RED HERRING:
+  with mean-1 weights and standardised targets it just reflects the init being far from target,
+  drops to val ~1.7 in 50 epochs. Stopped chasing epoch-0
+- Dead node (0,10) survived the noise>0 filter (float dust) -> tightened to noise>1e-4. RMSE
+  halved to 0.0085. Max node err still 0.37 because the worst node was never (0,10), it was the
+  put-wing corner (0,0) at noise 0.012, a genuine curvature underfit of a small MLP, not noise.
+  Accepted: that corner is low-value in real SPX too
+- Recovery regression (H err jumped to 0.05, rho overshot) traced to the REAL bug: calibrate.py
+  scored the fit uniformly over all 88 nodes while the net was trained on 83. Fitting dropped/
+  noisy nodes dragged H and rho. Fix: calibration objective uses checkpoint node_weights (zero
+  on dropped nodes) + report RMSE over valid nodes. Added multi-start for the eta/rho valley
+
+#### Certification (synthetic recovery, the product)
+- Held-out surface RMSE 0.0085 vol pts (valid nodes), val loss plateaued clean, no overfit gap
+- Recovery: H 0.1112 vs 0.11 (err 0.0012), eta 1.808 vs 1.8 (0.008), rho -0.693 vs -0.7
+  (0.007), v0 0.0404 vs 0.04 (0.0004), surface RMSE 0.00208. All four tight. Pipeline certified:
+  params in -> surface -> calibrate -> params back
+- Status: usable as the fast calibration engine for targets INSIDE the box on the canonical
+  grid. NOT yet ready for real SPX (flat xi0 cannot fit a sloping variance term structure) and
+  wings are down-weighted by design
+
+#### Workflow lessons banked
+- Jupyter caches imports: editing train.py/calibrate.py does nothing until KERNEL RESTART.
+  Lost time to this twice; the tell was byte-identical loss (795.9044) across "different" runs.
+  Verify with inspect.getsource before trusting a rerun
+- Working-directory: notebook runs from notebooks/, scripts from root; os.chdir("..") for now,
+  TODO make artifacts path __file__-anchored in dataset/train/calibrate
+
+#### TODO / next session
+1. Un-stub TestRecovery in tests/test_deep_cal.py (calibrate.py works now; loose tolerances,
+   self-contained tiny train). Keeps the pipeline certified against future edits
+2. Widen xi0 flat v0 -> term-structure pillars (extra net inputs), regenerate dataset, retrain,
+   re-certify synthetic recovery BEFORE any real data
+3. Then real SPX: parity forward per maturity, quotes -> log-moneyness, 2-D interp onto canonical
+   grid, calibrate on trusted interior nodes, watch edge extrapolation
+4. Anchor artifacts/ path via __file__ in the three deep_cal modules
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
