@@ -34,7 +34,7 @@ def rbergomi_iv_surface(
     v0: float,
     n_paths: int = 50_000,
     rng: np.random.Generator | None = None,
-    n_steps_per_year: int = 150,
+    n_steps_per_year: int = 100,
     min_steps: int = 20,
 ) -> np.ndarray:
     """rBergomi IV surface on (MATURITIES x LOG_MONEYNESS). Returns (8, 11).
