@@ -44,11 +44,16 @@ def train(
     dataset_name: str = "rbergomi_flat_dataset.npz",
     checkpoint_name: str = "surfacenet.pt",
     val_frac: float = 0.15,
-    epochs: int = 400,
+    epochs: int = 2000,
     batch_size: int = 128,
     lr: float = 1e-3,
     seed: int = 0,
+    noise: np.ndarray | None = None,   # (8,11) per-node MC noise for weighting; required
+    noise_max: float = 0.03,           # nodes noisier than this are dropped
+    weight_clip: float = 10.0,         # cap any node weight at this multiple of the median
 ) -> dict:
+    if noise is None:
+        raise ValueError("pass the measured per-node noise grid for inverse-variance weighting")
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
 
@@ -70,10 +75,28 @@ def train(
 
     net = SurfaceNet(n_inputs=N_INPUTS, n_outputs=N_OUTPUTS)
     opt = torch.optim.Adam(net.parameters(), lr=lr)
-    loss_fn = nn.MSELoss()
+
+    # --- node validity mask + weights from measured MC noise ---
+    noise_flat = noise.reshape(-1)
+    noise_std = noise_flat / ys.std                        # noise in standardised target units
+    valid = (noise_flat > 1e-4) & (noise_flat < noise_max)    # drop dead (==0) and too-noisy nodes
+    valid_count = int(valid.sum())
+    print(f"kept {valid_count}/{noise_flat.size} nodes")
+
+    w_np = np.zeros_like(noise_flat)
+    w_np[valid] = 1.0 / noise_std[valid]                   # inverse-std in standardised space
+    med = np.median(w_np[valid])                           # cap the range: no node dominates
+    w_np[valid] = np.clip(w_np[valid], 0.0, weight_clip * med)
+    w_np = w_np / w_np[valid].mean()                       # kept-node weights average ~1
+    print(f"weight min/mean/max: {w_np[valid].min():.2f} / "
+          f"{w_np[valid].mean():.2f} / {w_np[valid].max():.2f}")
+    w = torch.tensor(w_np, dtype=torch.float32)
+
+    def wmse(pred, targ):                                  # weighted MSE over valid nodes only
+        return (w * (pred - targ) ** 2).sum() / valid_count
 
     n_tr = Xtr.shape[0]
-    best_val, best_state = np.inf, None
+    best_val, best_state, patience, since_improved = np.inf, None, 150, 0
     history = {"train": [], "val": []}
 
     for ep in range(epochs):
@@ -81,50 +104,58 @@ def train(
         for b in range(0, n_tr, batch_size):
             bi = slice(b, b + batch_size)
             opt.zero_grad()
-            loss = loss_fn(net(Xtr[bi]), Ytr[bi])
+            loss = wmse(net(Xtr[bi]), Ytr[bi])
             loss.backward()
             opt.step()
 
         net.eval()
         with torch.no_grad():
-            tr_loss = loss_fn(net(Xtr), Ytr).item()
-            va_loss = loss_fn(net(Xva), Yva).item()
+            tr_loss = wmse(net(Xtr), Ytr).item()
+            va_loss = wmse(net(Xva), Yva).item()
         history["train"].append(tr_loss)
         history["val"].append(va_loss)
 
-        if va_loss < best_val:                      # keep the best-val weights, not the last
-            best_val = va_loss
-            best_state = {k: v.clone() for k, v in net.state_dict().items()}
+        if va_loss < best_val - 1e-6:
+            best_val, best_state, since_improved = va_loss, {k: v.clone() for k, v in net.state_dict().items()}, 0
+        else:
+            since_improved += 1
+            if since_improved >= patience:
+                print(f"early stop at epoch {ep}, best val {best_val:.3e}")
+                break
 
         if ep % 50 == 0 or ep == epochs - 1:
             print(f"epoch {ep:4d}  train {tr_loss:.3e}  val {va_loss:.3e}")
 
     net.load_state_dict(best_state)
 
-    # --- validation in VOL POINTS, the number that actually means something ---
+    # --- validation in VOL POINTS, over VALID nodes only ---
     net.eval()
     with torch.no_grad():
         pred_norm = net(Xva).numpy()
-    pred_iv = ys.inverse(pred_norm)                 # back to real IVs
+    pred_iv = ys.inverse(pred_norm)                        # (n_val, 88) real IVs
     true_iv = Y[val_idx]
-    rmse_vol = float(np.sqrt(np.mean((pred_iv - true_iv) ** 2)))
-    max_err = float(np.max(np.abs(pred_iv - true_iv)))
-    print(f"\nheld-out surface RMSE: {rmse_vol:.5f} vol pts   max node err: {max_err:.5f}")
+    diff = (pred_iv - true_iv)[:, valid]                   # surviving nodes only
+    rmse_vol = float(np.sqrt(np.mean(diff ** 2)))
+    max_err = float(np.max(np.abs(diff)))
+    print(f"\nheld-out surface RMSE: {rmse_vol:.5f} vol pts   max node err: {max_err:.5f}  (valid nodes)")
 
     ARTIFACTS.mkdir(exist_ok=True)
     torch.save({
         "state_dict": best_state,
-        "x_mean": xs.mean, "x_std": xs.std,       # scalers travel WITH the weights
+        "x_mean": xs.mean, "x_std": xs.std,
         "y_mean": ys.mean, "y_std": ys.std,
         "n_inputs": N_INPUTS, "n_outputs": N_OUTPUTS,
         "param_names": meta["param_names"],
         "param_box": meta["param_box"],
+        "valid_nodes": valid,
+        "node_weights": w_np,
+        "noise_max": noise_max,
         "rmse_vol": rmse_vol,
     }, ARTIFACTS / checkpoint_name)
     print(f"saved checkpoint to {ARTIFACTS / checkpoint_name}")
 
-    return {"history": history, "rmse_vol": rmse_vol, "max_err": max_err}
-
+    return {"history": history, "rmse_vol": rmse_vol, "max_err": max_err,
+            "valid_nodes": valid, "pred_iv": pred_iv, "true_iv": true_iv}
 
 if __name__ == "__main__":
     train()
