@@ -48,6 +48,10 @@ def load_spx_surface(
         except ValueError:
             # slice too illiquid to build; leave this maturity row NaN/invalid
             continue
+        
+        # GUARD
+        if abs(sl["dte"] - target_days) > 0.15 * target_days:
+            continue # snapped too far; do not mislabel this smile onto this grid row
 
         k_mkt, iv_mkt = sl["k"], sl["iv"]
         order = np.argsort(k_mkt)
