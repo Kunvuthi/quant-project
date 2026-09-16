@@ -1902,7 +1902,7 @@ the deep-calibration foundation laid. Stopped before dataset generation.
   slope is emergent, per-node noise averages out over many training surfaces). Banked for
   tomorrow if I compute a slope diagnostic on a calibrated fit
 
-### Day 46 - Tue Sep 16
+### Day 46 - Tue Sep 15
 
 Deep calibration pipeline built and certified end to end on synthetic recovery. Long
 debugging day, most of it isolating why the network would not fit and why recovery drifted.
@@ -1961,14 +1961,75 @@ degenerate node, and a calibration/training node-set mismatch.
 - Working-directory: notebook runs from notebooks/, scripts from root; os.chdir("..") for now,
   TODO make artifacts path __file__-anchored in dataset/train/calibrate
 
-#### TODO / next session
-1. Un-stub TestRecovery in tests/test_deep_cal.py (calibrate.py works now; loose tolerances,
-   self-contained tiny train). Keeps the pipeline certified against future edits
-2. Widen xi0 flat v0 -> term-structure pillars (extra net inputs), regenerate dataset, retrain,
-   re-certify synthetic recovery BEFORE any real data
-3. Then real SPX: parity forward per maturity, quotes -> log-moneyness, 2-D interp onto canonical
-   grid, calibrate on trusted interior nodes, watch edge extrapolation
-4. Anchor artifacts/ path via __file__ in the three deep_cal modules
+### Day 47 - Wed Sep 16
+
+xi0 widened flat -> term structure, retrained and certified on curve recovery, then built
+the real SPX loader. Stopped at the threshold of real-data calibration (fresh task tomorrow).
+
+#### xi0 term-structure widening
+- Pillars XI0_PILLARS = [0.1, 0.3, 0.6, 1.0, 2.0], network input 4 -> 8 (H, eta, rho + 5
+  pillars). N_INPUTS = 3 + N_PILLARS (derived, not hardcoded, so pillar count and net width
+  cannot drift)
+- surface.py: make_xi0 = linear-in-variance np.interp across pillars, flat extrapolation both
+  ends (gives xi0(0) = first pillar and t>2 = last pillar for free). rbergomi_iv_surface takes
+  xi0_pillars vector not scalar v0
+- dataset.py sampler = level + correlated pillar noise: pillars = level * exp(sigma * L @ z),
+  L = chol of AR(1) corr C[i,j] = 0.8**|i-j|, sigma 0.2. Gives smooth realistic curves (rising,
+  humped, gently falling) not independent-uniform zigzags. Verified by eye (12 sampled curves,
+  positive, smooth, spread across level band)
+
+#### Regenerate + retrain
+- 4000 term-structure surfaces (up from 3000 flat, wider input space), 0% reject, 2.1s/surface,
+  ~2.3h. Saved rbergomi_termstructure_dataset.npz (kept flat dataset separate)
+- Fresh noise grid at a representative curve (node_noise_ts.npy), same short-wing structure
+- Retrain -> surfacenet_ts.pt: held-out RMSE 0.0086 (vs flat 0.0085, widening cost ~nothing),
+  max node err 0.365 (same short-dated put corner, low-value, masked). Clean plateau
+
+#### Certified: curve recovery (the point of the widening)
+- Target from known interior curve: H 0.11, eta 1.8, rho -0.7, pillars [0.035,0.038,0.040,
+  0.042,0.045] (gently rising). Recovered: scalars [0.108, 1.84, -0.686], pillars [0.0352,
+  0.0387, 0.0401, 0.0404, 0.047], surface RMSE 0.00215. Level and slope tracked; 4th/5th pillar
+  show mild adjacent-pillar trade-off (same identifiability valley as eta/rho, milder). Judge
+  curve recovery by level+slope tracking + surface RMSE, NOT pillar-for-pillar exactness
+
+#### calibrate.py updated for 8-param vector
+- param_box now only covers 3 scalars (pillars are level+noise, not box-bounded). Fixed: build
+  full-width starts (scalars from box, pillars from pillar_range), in_box split into scalars_ok
+  (against box) + pillars_ok (positive, <= 1.5*phi). Returns scalars/pillars split out.
+  Default checkpoint now surfacenet_ts.pt
+- Also anchored ARTIFACTS via Path(__file__).parents[2] in train.py + calibrate.py (kills the
+  working-dir bug; was showing bare "artifacts" in calibrate before the fix). dataset.py TODO
+  same edit (deferred so it didn't disturb the running generate)
+
+#### SPX loader (calibration/deep_cal/spx_data.py)
+- load_spx_surface: reuses Phase-1 build_slice per canonical maturity (already gives clean (k,iv)
+  in network coords: parity forward, OTM, carry-consistent IV), then interpolates each smile onto
+  LOG_MONEYNESS and stacks to (8,11)
+- Extrapolation flagging: market_valid[i,j] True only if the canonical k lies inside that
+  maturity's actual quoted k-range (np.interp flat-extrapolates silently otherwise). Market-side
+  analogue of the network valid_nodes mask
+- Maturity-drift guard (dte_tol=0.15): reject a slice whose actual dte drifts >15% from the
+  canonical target rather than mislabel it onto the wrong grid row. This caught index 6 (457d
+  snapped onto the 548d/1.5y row) and correctly dropped it
+- max_staleness_days default = 7 (the Phase-1 papercut: 2-day wipes Monday/off-hours pulls)
+
+#### Live pull result (today's chain)
+- 43/88 market-valid after the drift guard. Per maturity: [6, 0, 8, 8, 10, 11, 0, 0]. Clean core
+  at dtes 19, 93, 184, 274, 366; forwards 7615 -> 7912 rising smoothly
+- Holes: index 1 (37d) failed to build (short-end gap), index 6+7 dropped (no liquid 1.5-2y that
+  pull). Longest reliable maturity 366d
+- SCOPE for tomorrow's calibration: data pins scalars + pillars up to ~1y. The 1.0 and 2.0 xi0
+  pillars sit BEYOND the data -> unconstrained, read as not-fitted not calibrated. Short-end hole
+  means H's slope anchor is thinner than ideal at the short end where roughness signal is strongest
+
+#### Next session: real SPX calibration
+1. Intersect masks: a node enters the objective only if network valid_nodes AND market_valid.
+   Wire this into calibrate (currently uses only node_weights)
+2. Calibrate surfacenet_ts against the 43-node surface, read scalars + near pillars, treat long
+   pillars as unconstrained
+3. Judge the fit: surface RMSE on the intersected nodes, and does H land plausibly (~0.1ish for
+   SPX), rho strongly negative. No synthetic ground truth now, so sanity not exactness
+4. dataset.py ARTIFACTS __file__ anchor (deferred cleanup)
 
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
