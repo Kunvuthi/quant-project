@@ -1,5 +1,5 @@
 # the MLP: architecture only, no training loop
-"""The forward-map network: (H, eta, rho, v0) -> flattened IV surface (88,).
+"""The forward-map network: (H, eta, rho, xi0_pillars) -> flattened IV surface (88,).
 
 Architecture only. No training loop, no I/O, no normalisation stats. Pure
 nn.Module so it imports without dragging in torch training machinery and is
@@ -11,9 +11,9 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from calibration.deep_cal.surface import N_MATURITIES, N_STRIKES
+from calibration.deep_cal.surface import N_MATURITIES, N_STRIKES, N_PILLARS
 
-N_INPUTS = 4                              # (H, eta, rho, v0); widens with term-structure xi0
+N_INPUTS = 3 + N_PILLARS                  # (H, eta, rho) + forward-variance pillars
 N_OUTPUTS = N_MATURITIES * N_STRIKES      # 88, the flattened surface
 
 

@@ -12,7 +12,8 @@ from pathlib import Path
 
 from calibration.deep_cal.network import SurfaceNet, N_INPUTS, N_OUTPUTS
 
-ARTIFACTS = Path("artifacts")
+REPO_ROOT = Path(__file__).resolve().parents[2]   # deep_cal/ -> calibration/ -> repo root
+ARTIFACTS = REPO_ROOT / "artifacts"
 
 
 class Scaler:
