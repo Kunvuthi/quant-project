@@ -2022,15 +2022,61 @@ the real SPX loader. Stopped at the threshold of real-data calibration (fresh ta
   pillars sit BEYOND the data -> unconstrained, read as not-fitted not calibrated. Short-end hole
   means H's slope anchor is thinner than ideal at the short end where roughness signal is strongest
 
-#### Next session: real SPX calibration
-1. Intersect masks: a node enters the objective only if network valid_nodes AND market_valid.
-   Wire this into calibrate (currently uses only node_weights)
-2. Calibrate surfacenet_ts against the 43-node surface, read scalars + near pillars, treat long
-   pillars as unconstrained
-3. Judge the fit: surface RMSE on the intersected nodes, and does H land plausibly (~0.1ish for
-   SPX), rho strongly negative. No synthetic ground truth now, so sanity not exactness
-4. dataset.py ARTIFACTS __file__ anchor (deferred cleanup)
+### Day 48 - Fri Sep 19 (Thu skipped, busy)
 
+Real SPX calibration. The Phase 1 ML capstone landed on live market data: bounded deep-cal
+fits rBergomi to today's SPX surface with sane parameters and a tight interior fit.
+
+#### Mask intersection + NaN sanitising (the two things that gated real data)
+- calibrate now intersects the network valid_nodes mask with the market_valid mask from the
+  loader: a node enters the objective only if the network trusts it AND the market quoted it
+  (not extrapolated). Pass market_valid=mkt["market_valid"]; None on synthetic leaves the
+  certified path unchanged
+- NaN-target bug: failed maturity rows leave NaN in the surface, and 0 * NaN = NaN, so a zero
+  weight does NOT neutralise a NaN target, it poisons the loss and every param came back NaN.
+  Fix: np.where(w>0, target, 0.0) to replace masked nodes with a finite dummy BEFORE the loss.
+  Masking and sanitising are two separate required steps. Same fix on the RMSE (score over
+  valid & market-valid & finite)
+
+#### Bounded calibration (the fix for garbage params)
+- First real fit returned rho=-1.40, a negative pillar: unconstrained gradient descent walked
+  the network inputs OUT of the trained box, where the net extrapolates and can fit the target
+  with nonsense. Low RMSE there is the net contorting off-domain, not a real fit
+- Fix: optimise in unconstrained u-space, map to the box via theta = lo + (hi-lo)*sigmoid(u)
+  every step. theta is in-box by construction, the net is never queried out of domain. Starts
+  built in theta-space then inverted to u via logit. lr bumped to 5e-2 (u-space well-conditioned)
+- Added a `pinned` report: any param within 2% of a box edge. Automates the W8 pinned-parameter
+  red flag. Empty list = interior fit, box adequate. A pinned rho would mean the surface wants
+  more skew than rBergomi at the edge can give (a real modelling limit, not an artifact)
+
+#### Result (today's live SPX pull, surfacenet_ts.pt)
+- H 0.107, eta 2.459, rho -0.896, all interior, pinned=[] (nothing at a box edge). RMSE 0.0067
+  vol pts over 43 valid nodes across dtes 35, 91, 182, 272, 364. H right in the empirical SPX
+  roughness range, rho strongly negative as equity skew demands. Economically coherent
+- Pillars [0.024, 0.054, 0.045, 0.076, 0.015]: first three (0.1-0.6y) meaningful and sane
+  (vol ~15-23%); pillars 4-5 (1.0y, 2.0y) BEYOND the 364d data -> unconstrained, read as
+  not-fitted (the 0.015 at 2y is where the optimiser left it, not a market observation)
+- n_nodes 43 = market-valid count exactly: today the 4 network-dropped nodes were already
+  market-invalid, so the intersection didn't bite beyond the market mask. It will on a fuller
+  surface that reaches the wings
+
+#### Validation plot (fit vs market, per maturity) — the real certification
+- Interior + long maturities (0.25-1.0y) fit excellently, line threads the market points
+  through the skew AND the call-side convexity turn
+- Short-dated panel (35d) shows the honest limitation: deep-put wing market points (k=-0.3,
+  -0.25) sit ABOVE the fit; single-H rBergomi undershoots the very steep short-end put skew.
+  Structural signature, not a calibration error. This is the write-up figure
+- Parity forwards confirmed right (smiles centred sensibly around k=0, correct skew sign every
+  maturity); term structure coherent (level drops, smile flattens with maturity)
+
+#### Milestone
+- Phase 1 ML capstone COMPLETE on live data. Full arc closed: classical pricers (BSM->Bates)
+  -> rough vol for the term structure -> NN forward-map approximator -> bounded deep-cal fits
+  rBergomi to real SPX in ms, validated against the certified pricer AND the market
+- Deferred/cleanup carried: dataset.py ARTIFACTS __file__ anchor; confirm TestRecovery guards
+  the term-structure signature; the 37d/short-end and 1.5-2y long-end holes are a data-availability
+  limit not a code one (thin listed expiries that pull)
+  
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
