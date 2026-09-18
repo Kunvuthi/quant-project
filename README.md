@@ -41,7 +41,7 @@ that run through the whole codebase:
   reference throughout. Everything is priced in log-moneyness against that
   forward, which also makes surfaces spot-invariant.
 
-The debugging stories below are the real signal. They are the bugs this
+The debugging stories below are the main signal. They are the bugs this
 discipline caught that a single sanity check would have missed.
 
 ## The Phase 1 arc
@@ -77,7 +77,7 @@ gets wrong about the volatility surface.
    approximate the rBergomi parameter-to-surface map, validated it against the
    certified pricer, and then calibrated by gradient descent on the network's
    inputs. Calibration drops from a slow Monte Carlo loop to milliseconds, and the
-   final fit is against real SPX quotes.
+   final fit is against actual SPX quotes.
 
 Each step is one weekly notebook in `notebooks/`, in order, `01` through `18`.
 
@@ -102,7 +102,7 @@ slice (52 OTM strikes), RMSE in vol points:
 | Bates  | 8      | 0.337          |
 
 RMSE falls almost monotonically with parameter count, which is mostly the "more
-parameters fit better" law and not one model being truer. The real finding is
+parameters fit better" law and not one model being truer. The actual finding is
 underneath the table. The two lowest-RMSE fits, Bates and Kou, both bought their
 low RMSE by pinning parameters to their box edges (Bates pinned vol-of-vol and
 jump intensity; Kou collapsed to a one-sided down-jump-only degeneracy). The only
@@ -111,7 +111,7 @@ this slice the RMSE ranking and the trustworthiness ranking are nearly inverted:
 Heston, all-interior and mid-table on RMSE, is the fit I would actually believe. A
 lower RMSE is not an improvement when it is bought with pinned parameters.
 
-**Real SPX deep calibration (notebook 18).** The trained network calibrated to a
+**Actual SPX deep calibration (notebook 18).** The trained network calibrated to a
 live SPX surface returns `H = 0.107`, `rho = -0.896`, `eta = 2.46`, with no
 parameter pinned to a box edge, at a surface RMSE of about `0.0067` in absolute
 implied-vol units (roughly 0.67 vol points) over the valid nodes. Interior
@@ -192,7 +192,7 @@ the network learns and what it is later asked to calibrate.
 - `calibrate.py` - freezes the trained network and optimises its inputs, not its
   weights, to match a target surface. The sigmoid reparameterisation keeps every
   parameter inside the trained box.
-- `spx_data.py` - resamples a real SPX chain onto the canonical grid, flagging any
+- `spx_data.py` - resamples an actual SPX chain onto the canonical grid, flagging any
   node that required extrapolation beyond the market's quoted range.
 
 See [docs/architecture.md](docs/architecture.md) for the full data flow.
