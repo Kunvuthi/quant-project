@@ -12,3 +12,6 @@ packages = ["models", "calibration", "pricing", "data"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: slow tests (simulation, training, dataset generation)",
+]

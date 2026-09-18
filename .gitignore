@@ -20,6 +20,9 @@ venv/
 .vscode/
 .idea/
 
+# Artifacts
+artifacts/
+
 # OS
 Thumbs.db
 .DS_Store
@@ -32,4 +35,4 @@ data/processed/
 *.h5
 
 # Notebook outputs that might contain large data
-# (we'll handle these case-by-case)
+WEEKLY_LOG.md
