@@ -1,4 +1,4 @@
-# Quant Project — Phase 1: Options Pricing and Calibration
+# Quant Project - Phase 1: Options Pricing and Calibration
 
 A math-first, self-directed build of a certified options-pricing and calibration
 toolkit, from Black-Scholes through rough volatility, ending in a neural
@@ -179,20 +179,20 @@ tests/         pytest suite with standard-error-derived tolerances
 route through exactly one surface convention, which removes any drift between what
 the network learns and what it is later asked to calibrate.
 
-- `surface.py` — parameters to an implied-vol surface on the canonical `8 x 11`
+- `surface.py` - parameters to an implied-vol surface on the canonical `8 x 11`
   grid, via the certified rBergomi Monte Carlo pricer. Both the dataset builder and
   the real-data path call this one function.
-- `dataset.py` — samples the trained parameter box, prices each sample through
+- `dataset.py` - samples the trained parameter box, prices each sample through
   `surface.py`, and saves parameters, surfaces, and the box itself to `artifacts/`.
-- `network.py` — `SurfaceNet`, a small MLP that outputs the whole surface at once
+- `network.py` - `SurfaceNet`, a small MLP that outputs the whole surface at once
   (the grid-based approach of Horvath, Muguruza and Tomas), so surface structure is
   learned jointly.
-- `train.py` — trains the network and checkpoints the normalisation scalers
+- `train.py` - trains the network and checkpoints the normalisation scalers
   alongside the weights, because inference must apply the identical transform.
-- `calibrate.py` — freezes the trained network and optimises its inputs, not its
+- `calibrate.py` - freezes the trained network and optimises its inputs, not its
   weights, to match a target surface. The sigmoid reparameterisation keeps every
   parameter inside the trained box.
-- `spx_data.py` — resamples a real SPX chain onto the canonical grid, flagging any
+- `spx_data.py` - resamples a real SPX chain onto the canonical grid, flagging any
   node that required extrapolation beyond the market's quoted range.
 
 See [docs/architecture.md](docs/architecture.md) for the full data flow.
@@ -249,5 +249,3 @@ Deferred technical items, none of them blocking:
 Possible rough-volatility extension: the short-wing undershoot in the SPX fit
 motivates a multi-factor or rough-Heston model, if term-structure-of-skew fit
 becomes the priority.
-
-Phase 2 (planned): a real IBKR portfolio and backtesting arc.
