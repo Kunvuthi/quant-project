@@ -2022,7 +2022,7 @@ the real SPX loader. Stopped at the threshold of real-data calibration (fresh ta
   pillars sit BEYOND the data -> unconstrained, read as not-fitted not calibrated. Short-end hole
   means H's slope anchor is thinner than ideal at the short end where roughness signal is strongest
 
-### Day 48 - Fri Sep 19 (Thu skipped, busy)
+### Day 48 - Fri Sep 18 (Thu skipped, busy)
 
 Real SPX calibration. The Phase 1 ML capstone landed on live market data: bounded deep-cal
 fits rBergomi to today's SPX surface with sane parameters and a tight interior fit.
@@ -2076,7 +2076,7 @@ fits rBergomi to today's SPX surface with sane parameters and a tight interior f
 - Deferred/cleanup carried: dataset.py ARTIFACTS __file__ anchor; confirm TestRecovery guards
   the term-structure signature; the 37d/short-end and 1.5-2y long-end holes are a data-availability
   limit not a code one (thin listed expiries that pull)
-  
+
 ## Notes
 - Conda env: `quant` (Python 3.11, numpy 2.4.6, scipy 1.17.1)
 - Known quirk: scipy shows as `pypi_0` in `conda list` despite conda-forge install;
