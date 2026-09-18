@@ -35,4 +35,4 @@ data/processed/
 *.h5
 
 # Notebook outputs that might contain large data
-# (we'll handle these case-by-case)
+# (we'll handle these case-by-case)WEEKLY_LOG.md
