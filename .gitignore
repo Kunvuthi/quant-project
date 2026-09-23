@@ -30,6 +30,7 @@ Thumbs.db
 # Data (don't commit large data files to Git)
 data/raw/
 data/processed/
+data/equity_cache/
 *.csv
 *.parquet
 *.h5
