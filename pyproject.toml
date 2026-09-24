@@ -8,7 +8,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["models", "calibration", "pricing", "data"]
+packages = ["models", "calibration", "pricing", "data", "strategies"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
