@@ -33,6 +33,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from strategies.momentum import momentum_scores, select_portfolios, LOOKBACK
+from strategies.reversal import reversal_scores
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CACHE = REPO_ROOT / "data" / "equity_cache"
@@ -59,9 +60,13 @@ def _portfolio_path(prices_after: pd.DataFrame, weights: pd.Series) -> pd.Series
     return port
 
 
-def run_windows(prices: pd.DataFrame, step: int) -> pd.DataFrame:
+def run_windows(prices: pd.DataFrame, step: int, signal_fn, signal_name: str,
+                min_names: int = 30) -> pd.DataFrame:
     """Roll windows with the given step (WINDOW for non-overlapping, smaller for
-    overlapping). Returns a tidy table: one row per (window, strategy)."""
+    overlapping). signal_fn scores the universe at each formation date (e.g.
+    momentum_scores or reversal_scores); signal_name labels the output so multiple
+    signals can be compared in one table. Returns a tidy table: one row per
+    (window, signal, strategy)."""
     dates = prices.index
     rows = []
     first_form = LOOKBACK                       # need LOOKBACK history before forming
@@ -73,10 +78,10 @@ def run_windows(prices: pd.DataFrame, step: int) -> pd.DataFrame:
         prices_after = prices.iloc[f : f + WINDOW + 1]   # formation + window ahead
 
         try:
-            scores = momentum_scores(prices_to_t)
+            scores = signal_fn(prices_to_t)
         except ValueError:
             continue
-        if len(scores) < 30:                    # too few eligible names this window
+        if len(scores) < min_names:             # too few eligible names this window
             continue
         ports = select_portfolios(scores, prices_to_t)
 
@@ -86,7 +91,7 @@ def run_windows(prices: pd.DataFrame, step: int) -> pd.DataFrame:
             running_max = path.cummax()
             max_dd = (path / running_max - 1.0).min()
             rows.append({
-                "form_date": form_date, "strategy": name,
+                "form_date": form_date, "signal": signal_name, "strategy": name,
                 "total_return": float(total_ret), "max_drawdown": float(max_dd),
             })
 
@@ -109,16 +114,29 @@ def tail_metrics(returns: pd.Series, alpha: float = 0.05) -> dict:
 
 def print_summary(df: pd.DataFrame, label: str) -> None:
     print(f"\n=== {label}: {df['form_date'].nunique()} windows ===")
-    print(f"{'strategy':>10}  {'mean':>7}  {'median':>7}  {'std':>6}  "
+    print(f"{'signal':>10} {'strategy':>14}  {'mean':>7}  {'median':>7}  {'std':>6}  "
           f"{'worst':>7}  {'worstDD':>7}  {'VaR5':>6}  {'CVaR5':>6}")
-    for strat in ["core", "satellite", "blend", "core_volsized"]:
-        r = df[df["strategy"] == strat]["total_return"]
-        dd = df[df["strategy"] == strat]["max_drawdown"]
-        if r.empty:
-            continue
-        t = tail_metrics(r)
-        print(f"{strat:>10}  {r.mean():+.3f}  {r.median():+.3f}  {r.std():.3f}  "
-              f"{r.min():+.3f}  {dd.min():+.3f}  {t['VaR']:.3f}  {t['CVaR']:.3f}")
+    for sig in ["momentum", "reversal"]:
+        for strat in ["core", "satellite", "blend", "core_volsized"]:
+            r = df[(df["signal"] == sig) & (df["strategy"] == strat)]["total_return"]
+            dd = df[(df["signal"] == sig) & (df["strategy"] == strat)]["max_drawdown"]
+            if r.empty:
+                continue
+            t = tail_metrics(r)
+            print(f"{sig:>10} {strat:>14}  {r.mean():+.3f}  {r.median():+.3f}  {r.std():.3f}  "
+                  f"{r.min():+.3f}  {dd.min():+.3f}  {t['VaR']:.3f}  {t['CVaR']:.3f}")
+            
+def equity_curve(nonover_df: pd.DataFrame, signal: str, strategy: str) -> pd.Series:
+    """Chain consecutive NON-OVERLAPPING windows into one continuous equity curve:
+    reinvest fully every 5 weeks. Returns cumulative value indexed by form_date,
+    starting at 1.0. This is the 'if I ran it continuously' total-return view, as
+    opposed to the distribution of independent per-window returns. Only valid on
+    non-overlapping windows (overlapping ones share days and cannot be chained)."""
+    sub = nonover_df[(nonover_df["signal"] == signal) &
+                     (nonover_df["strategy"] == strategy)].sort_values("form_date")
+    growth = 1.0 + sub["total_return"].values          # per-window growth factors
+    cumulative = np.cumprod(growth)
+    return pd.Series(cumulative, index=sub["form_date"].values)
 
 
 
@@ -126,12 +144,18 @@ def main() -> None:
     prices = pd.read_parquet(CACHE / "close_panel_clean.parquet")
     print(f"panel {prices.shape}, {prices.index.min().date()} to {prices.index.max().date()}")
 
-    nonover = run_windows(prices, step=WINDOW)          # primary comparison
-    over = run_windows(prices, step=5)                  # robustness diagnostic (~weekly starts)
+    from strategies.momentum import momentum_scores
+    from strategies.reversal import reversal_scores
 
-    # ex-COVID view: drop windows whose FORMATION falls in the crash/rebound period,
-    # so one extreme episode does not silently drive the tail. COVID stays IN the
-    # data as a real event; this is a second view, not a cleaning of the primary.
+    # both signals over IDENTICAL windows, for a fair head-to-head
+    mom_no = run_windows(prices, WINDOW, momentum_scores, "momentum")
+    rev_no = run_windows(prices, WINDOW, reversal_scores, "reversal")
+    nonover = pd.concat([mom_no, rev_no], ignore_index=True)
+
+    mom_ov = run_windows(prices, 5, momentum_scores, "momentum")
+    rev_ov = run_windows(prices, 5, reversal_scores, "reversal")
+    over = pd.concat([mom_ov, rev_ov], ignore_index=True)
+
     covid = (nonover["form_date"] >= "2020-02-01") & (nonover["form_date"] <= "2020-05-31")
     nonover_excovid = nonover[~covid]
 
@@ -139,10 +163,20 @@ def main() -> None:
     print_summary(over, "OVERLAPPING (robustness)")
     print_summary(nonover_excovid, "NON-OVERLAPPING, EX-COVID")
 
+    # chained equity-curve total return over the whole period, per signal x strategy
+    print("\n=== CHAINED EQUITY CURVE: cumulative total return, full period ===")
+    print(f"{'signal':>10} {'strategy':>14}  {'final_value':>11}  {'total_return':>12}")
+    for sig in ["momentum", "reversal"]:
+        for strat in ["core", "satellite", "blend", "core_volsized"]:
+            curve = equity_curve(nonover, sig, strat)
+            if curve.empty:
+                continue
+            final = curve.iloc[-1]
+            print(f"{sig:>10} {strat:>14}  {final:>11.2f}  {final - 1.0:>+12.2%}")
+
     nonover.to_parquet(CACHE / "backtest_nonoverlap.parquet")
     over.to_parquet(CACHE / "backtest_overlap.parquet")
     print("\nwrote backtest_nonoverlap, backtest_overlap")
-
 
 if __name__ == "__main__":
     main()
