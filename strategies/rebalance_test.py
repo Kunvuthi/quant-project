@@ -1,114 +1,98 @@
-"""Cadence experiment: does re-ranking momentum WITHIN the 5-week window help,
-versus buy-and-hold? Tests weekly / fortnightly / hold on the CORE strategy only,
-gross of costs. Everything is held fixed except rebalance frequency, so the
-comparison isolates cadence.
-
-Turnover control (buffer rule): at each rebalance, sell a held name only if it has
-dropped out of the top BUFFER by momentum, and buy names newly in the top CORE_N to
-refill to CORE_N. Names between CORE_N and BUFFER are held, not churned. This keeps
-turnover realistic; rebalancing without a buffer is a strawman.
-
-No look-ahead: each in-window rebalance re-ranks on prices up to that rebalance day
-only. Gross of transaction costs (turnover is recorded so costs can be applied later).
-"""
+"""Cadence experiment, generalised to any signal and construction. Gross of costs.
+Within each 5-week window, re-rank on the given signal every rebal_step days with
+the buffer rule. Answers whether frequent rebalancing rescues a fast-decaying signal
+(reversal) that underperforms when held. NOTE: gross only; high turnover here is
+cost-fatal and manually impractical live, so a positive gross result is a research
+finding, not a usable strategy."""
 from __future__ import annotations
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from strategies.momentum import momentum_scores, CORE_N, LOOKBACK
+from strategies.momentum import momentum_scores, select_portfolios, CORE_N, LOOKBACK
+from strategies.reversal import reversal_scores
+from strategies.combo import combo_scores
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CACHE = REPO_ROOT / "data" / "equity_cache"
 WINDOW = 25
-BUFFER = 40          # hold a name until it falls out of the top 40; refill from top 25
+BUFFER_MULT = 1.6      # hold a name until it falls out of top (basket_size * BUFFER_MULT)
+
+SIGNALS = {"momentum": momentum_scores, "reversal": reversal_scores, "combo": combo_scores}
 
 
-def _equal_weight(names) -> pd.Series:
-    return pd.Series(1.0 / len(names), index=list(names))
+def _rebalanced_path(prices, f, weights0, held0, signal_fn, rebal_step, basket_size):
+    """Walk one window day by day; re-rank on signal_fn every rebal_step days with a
+    buffer. Returns (return, max_drawdown, total_turnover). Total loss on NaN."""
+    dates = prices.index
+    window_dates = dates[f: f + WINDOW + 1]
+    held, weights = list(held0), weights0.copy()
+    val, path, turnover = 1.0, [1.0], 0.0
+    buffer_n = int(round(basket_size * BUFFER_MULT))
+
+    for i in range(1, len(window_dates)):
+        d_prev, d_now = window_dates[i - 1], window_dates[i]
+        rel = (prices.loc[d_now, held] / prices.loc[d_prev, held]).fillna(0.0)  # NaN=total loss
+        val *= float((weights * rel).sum())
+        path.append(val)
+
+        if rebal_step < WINDOW and i % rebal_step == 0 and i < len(window_dates) - 1:
+            scores = signal_fn(prices.iloc[: f + i + 1])
+            ranked = scores.sort_values(ascending=False)
+            top_basket = list(ranked.index[:basket_size])
+            top_buffer = set(ranked.index[:buffer_n])
+            kept = [n for n in held if n in top_buffer]
+            refill = [n for n in top_basket if n not in kept]
+            new_held = (kept + refill)[:basket_size]
+            turnover += len(set(new_held) - set(held)) / basket_size
+            held = new_held
+            weights = pd.Series(1.0 / len(held), index=held)
+
+    run_max = np.maximum.accumulate(path)
+    return path[-1] - 1.0, float((np.array(path) / run_max - 1.0).min()), turnover
 
 
-def run_cadence(prices: pd.DataFrame, rebal_step: int, window_step: int = WINDOW) -> pd.DataFrame:
-    """Roll 5-week windows; within each, re-rank every rebal_step days with the
-    buffer rule. rebal_step >= WINDOW means buy-and-hold (one selection at day 0).
-    Records per-window total return, max drawdown, and total turnover."""
+def run_all(prices, rebal_step, window_step=WINDOW):
+    """All signals x {core, satellite} at the given rebalance cadence. (Blend and
+    core_volsized skipped here: blend is a fixed mix not a single re-rankable basket,
+    and volsizing needs re-weighting logic; core and satellite are the clean cases
+    for the cadence question.)"""
     dates = prices.index
     rows = []
-    first_form = LOOKBACK
-    last_form = len(dates) - WINDOW - 1
-
-    for f in range(first_form, last_form, window_step):
-        prices_to_form = prices.iloc[: f + 1]
-        try:
-            scores = momentum_scores(prices_to_form)
-        except ValueError:
-            continue
-        if len(scores) < 50:
-            continue
-
-        held = list(scores.sort_values(ascending=False).index[:CORE_N])
-        weights = _equal_weight(held)
-
-        # walk the window day by day, rebalancing on the cadence
-        window_dates = dates[f : f + WINDOW + 1]
-        port_val = 1.0
-        path = [port_val]
-        turnover = 0.0
-
-        for i in range(1, len(window_dates)):
-            d_prev, d_now = window_dates[i - 1], window_dates[i]
-            # daily return of the held equal-weight book (total loss on NaN)
-            p_prev = prices.loc[d_prev, held]
-            p_now = prices.loc[d_now, held]
-            rel = (p_now / p_prev).fillna(0.0)          # NaN -> total loss that day
-            # simpler: portfolio daily growth factor
-            growth = float((weights * rel).sum())
-            port_val *= growth
-            path.append(port_val)
-
-            # rebalance if this day is on the cadence (and not the last day)
-            days_in = i
-            if rebal_step < WINDOW and days_in % rebal_step == 0 and i < len(window_dates) - 1:
-                scores_now = momentum_scores(prices.iloc[: f + i + 1])
-                ranked = scores_now.sort_values(ascending=False)
-                top_core = set(ranked.index[:CORE_N])
-                top_buffer = set(ranked.index[:BUFFER])
-                # keep held names still in the buffer; drop the rest
-                kept = [n for n in held if n in top_buffer]
-                # refill to CORE_N from the top-core names not already held
-                refill = [n for n in ranked.index[:CORE_N] if n not in kept]
-                new_held = (kept + refill)[:CORE_N]
-                # turnover = fraction of book replaced this rebalance
-                turnover += len(set(new_held) - set(held)) / CORE_N
-                held = new_held
-                weights = _equal_weight(held)
-
-        total_ret = path[-1] / path[0] - 1.0
-        run_max = np.maximum.accumulate(path)
-        max_dd = float((np.array(path) / run_max - 1.0).min())
-        rows.append({"form_date": dates[f], "total_return": float(total_ret),
-                     "max_drawdown": max_dd, "turnover": float(turnover)})
-
+    for f in range(LOOKBACK, len(dates) - WINDOW - 1, window_step):
+        for sig_name, sig_fn in SIGNALS.items():
+            try:
+                scores = sig_fn(prices.iloc[: f + 1])
+            except ValueError:
+                continue
+            if len(scores) < CORE_N + 5:
+                continue
+            ranked = scores.sort_values(ascending=False)
+            for strat, size in [("core", CORE_N), ("satellite", 4)]:
+                held0 = list(ranked.index[:size])
+                w0 = pd.Series(1.0 / size, index=held0)
+                ret, dd, to = _rebalanced_path(prices, f, w0, held0, sig_fn, rebal_step, size)
+                rows.append({"form_date": dates[f], "signal": sig_name, "strategy": strat,
+                             "total_return": ret, "max_drawdown": dd, "turnover": to})
     return pd.DataFrame(rows)
 
 
-def main() -> None:
+def main():
     prices = pd.read_parquet(CACHE / "close_panel_clean.parquet")
-    cadences = {"hold": WINDOW, "fortnightly": 10, "weekly": 5}
+    cadences = {"hold": WINDOW, "fortnightly": 10, "weekly": 5, "twice_weekly": 2}
 
-    print(f"{'cadence':>12}  {'mean':>7}  {'median':>7}  {'std':>6}  "
-          f"{'worst':>7}  {'worstDD':>7}  {'avg_turnover':>12}")
-    results = {}
-    for name, step in cadences.items():
-        df = run_cadence(prices, rebal_step=step)
-        results[name] = df
-        r = df["total_return"]
-        print(f"{name:>12}  {r.mean():+.3f}  {r.median():+.3f}  {r.std():.3f}  "
-              f"{r.min():+.3f}  {df['max_drawdown'].min():+.3f}  "
-              f"{df['turnover'].mean():>12.2f}")
-
-    for name, df in results.items():
-        df.to_parquet(CACHE / f"rebalance_{name}.parquet")
-    print("\nwrote rebalance_hold, rebalance_fortnightly, rebalance_weekly")
+    for cad_name, step in cadences.items():
+        df = run_all(prices, step)
+        print(f"\n=== cadence: {cad_name} (step {step}) ===")
+        print(f"{'signal':>10} {'strategy':>10}  {'mean':>7}  {'std':>6}  "
+              f"{'worst':>7}  {'avg_turnover':>12}")
+        for sig in ["momentum", "reversal", "combo"]:
+            for strat in ["core", "satellite"]:
+                s = df[(df.signal == sig) & (df.strategy == strat)]
+                if s.empty:
+                    continue
+                r = s["total_return"]
+                print(f"{sig:>10} {strat:>10}  {r.mean():+.3f}  {r.std():.3f}  "
+                      f"{r.min():+.3f}  {s['turnover'].mean():>12.2f}")
 
 
 if __name__ == "__main__":

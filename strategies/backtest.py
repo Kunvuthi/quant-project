@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 from strategies.momentum import momentum_scores, select_portfolios, LOOKBACK
 from strategies.reversal import reversal_scores
+from strategies.combo import combo_scores
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CACHE = REPO_ROOT / "data" / "equity_cache"
@@ -116,7 +117,7 @@ def print_summary(df: pd.DataFrame, label: str) -> None:
     print(f"\n=== {label}: {df['form_date'].nunique()} windows ===")
     print(f"{'signal':>10} {'strategy':>14}  {'mean':>7}  {'median':>7}  {'std':>6}  "
           f"{'worst':>7}  {'worstDD':>7}  {'VaR5':>6}  {'CVaR5':>6}")
-    for sig in ["momentum", "reversal"]:
+    for sig in ["momentum", "reversal", "combo"]:
         for strat in ["core", "satellite", "blend", "core_volsized"]:
             r = df[(df["signal"] == sig) & (df["strategy"] == strat)]["total_return"]
             dd = df[(df["signal"] == sig) & (df["strategy"] == strat)]["max_drawdown"]
@@ -150,11 +151,13 @@ def main() -> None:
     # both signals over IDENTICAL windows, for a fair head-to-head
     mom_no = run_windows(prices, WINDOW, momentum_scores, "momentum")
     rev_no = run_windows(prices, WINDOW, reversal_scores, "reversal")
-    nonover = pd.concat([mom_no, rev_no], ignore_index=True)
+    combo_no = run_windows(prices, WINDOW, combo_scores, "combo")
+    nonover = pd.concat([mom_no, rev_no, combo_no], ignore_index=True)
 
     mom_ov = run_windows(prices, 5, momentum_scores, "momentum")
     rev_ov = run_windows(prices, 5, reversal_scores, "reversal")
-    over = pd.concat([mom_ov, rev_ov], ignore_index=True)
+    combo_ov = run_windows(prices, 5, combo_scores, "combo")
+    over = pd.concat([mom_ov, rev_ov, combo_ov], ignore_index=True)
 
     covid = (nonover["form_date"] >= "2020-02-01") & (nonover["form_date"] <= "2020-05-31")
     nonover_excovid = nonover[~covid]
@@ -166,7 +169,7 @@ def main() -> None:
     # chained equity-curve total return over the whole period, per signal x strategy
     print("\n=== CHAINED EQUITY CURVE: cumulative total return, full period ===")
     print(f"{'signal':>10} {'strategy':>14}  {'final_value':>11}  {'total_return':>12}")
-    for sig in ["momentum", "reversal"]:
+    for sig in ["momentum", "reversal", "combo"]:
         for strat in ["core", "satellite", "blend", "core_volsized"]:
             curve = equity_curve(nonover, sig, strat)
             if curve.empty:
